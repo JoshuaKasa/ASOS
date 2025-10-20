@@ -1,0 +1,110 @@
+     1                                  org 0x7E00
+     2                                  bits 16
+     3                                  
+     4 00000000 EB01                    jmp start                 ; evita di eseguire i dati (DAP) come codice
+     5                                  
+     6 00000002 00                      boot_drive db 0           ; drive passato dal BIOS
+     7                                  
+     8                                  start:
+     9 00000003 FA                          cli
+    10 00000004 31C0                        xor ax, ax
+    11 00000006 8ED8                        mov ds, ax
+    12 00000008 8EC0                        mov es, ax
+    13 0000000A 8ED0                        mov ss, ax
+    14 0000000C BC0090                      mov sp, 0x9000        ; stack in real mode
+    15 0000000F FB                          sti
+    16                                  
+    17                                      ; salva il drive BIOS
+    18 00000010 8816[0200]                  mov [boot_drive], dl
+    19                                  
+    20                                      ; (consigliato) abilita A20 prima di usare buffer > 1MiB
+    21 00000014 B80124                      mov ax, 0x2401
+    22 00000017 CD15                        int 0x15
+    23 00000019 7278                        jc disk_error
+    24                                  
+    25                                      ; debug: stampa '2'
+    26 0000001B B40E                        mov ah, 0x0E
+    27 0000001D B032                        mov al, '2'
+    28 0000001F CD10                        int 0x10
+    29                                  
+    30 00000021 BE[B900]                    mov si, kernel_dap
+    31 00000024 B442                        mov ah, 0x42
+    32 00000026 8A16[0200]                  mov dl, [boot_drive]
+    33 0000002A CD13                        int 0x13
+    34 0000002C 7265                        jc disk_error
+    35                                  
+    36 0000002E FA                          cli
+    37 0000002F 0F0116[B300]                lgdt [gdt_descriptor]
+    38                                  
+    39 00000034 0F20C0                      mov eax, cr0
+    40 00000037 6683C801                    or  eax, 1           ; PE bit
+    41 0000003B 0F22C0                      mov cr0, eax
+    42                                  
+    43                                      ; far jump per flush pipeline e caricare CS=0x08
+    44 0000003E EA[4300]0800                jmp 0x08:pm_entry
+    45                                  
+    46                                  [bits 32]
+    47                                  pm_entry:
+    48 00000043 66B81000                    mov ax, 0x10         ; data selector
+    49 00000047 8ED8                        mov ds, ax
+    50 00000049 8EC0                        mov es, ax
+    51 0000004B 8EE0                        mov fs, ax
+    52 0000004D 8EE8                        mov gs, ax
+    53 0000004F 8ED0                        mov ss, ax
+    54                                  
+    55 00000051 BC00000900                  mov esp, 0x90000     ; stack 32-bit (alto)
+    56                                  
+    57                                      ; debug: scrive 'O' verde in alto a sinistra
+    58 00000056 C60500800B004F              mov byte [0xB8000], 'O'
+    59 0000005D C60501800B000A              mov byte [0xB8001], 0x0A
+    60                                  
+    61                                      ; copia kernel da 0x00090000 a 0x00100000
+    62 00000064 BE00000900                  mov esi, 0x00090000
+    63 00000069 BF00001000                  mov edi, 0x00100000
+    64 0000006E B980040000                  mov ecx, (KERNEL_SECTORS * 512) / 4    ; dword count
+    65 00000073 F3A5                        rep movsd
+    66                                  
+    67                                      ; debug: scrive 'C' verde dopo la 'O'
+    68 00000075 C60502800B0043              mov byte [0xB8002], 'C'
+    69 0000007C C60503800B000A              mov byte [0xB8003], 0x0A
+    70                                  
+    71                                      ; far jump al kernel
+    72 00000083 6800001000                  push dword 0x00100000
+    73 00000088 666A08                      push word  0x08
+    74 0000008B CB                          retf
+    75                                          
+    76                                  
+    77                                      ; salta al kernel (caricato a 0x0010_0000)
+    78 0000008C EA000010000800              jmp 0x08:0x00100000
+    79                                  
+    80                                  [bits 16]
+    81                                  disk_error:
+    82 00000093 FA                          cli
+    83 00000094 B40E                        mov ah, 0x0E
+    84 00000096 B045                        mov al, 'E'
+    85 00000098 CD10                        int 0x10
+    86 0000009A F4                          hlt
+    87                                  
+    88                                  gdt_start:
+    89 0000009B 0000000000000000            dq 0x0000000000000000        ; null
+    90 000000A3 FFFF0000009ACF00            dq 0x00CF9A000000FFFF        ; code 32-bit base=0 limit=4GB
+    91 000000AB FFFF00000092CF00            dq 0x00CF92000000FFFF        ; data 32-bit base=0 limit=4GB
+    92                                  gdt_end:
+    93                                  
+    94                                  gdt_descriptor:
+    95 000000B3 1700                        dw gdt_end - gdt_start - 1
+    96 000000B5 [9B000000]                  dd gdt_start
+    97                                  
+    98                                  KERNEL_SECTORS equ 9            ; adegua alla dimensione reale del tuo kernel.bin
+    99                                  KERNEL_LBA     equ 5            ; coerente col Makefile (seek=5)
+   100                                  
+   101                                  kernel_dap:
+   102 000000B9 10                          db 0x10                     ; size
+   103 000000BA 00                          db 0x00                     ; reserved
+   104 000000BB 0900                        dw KERNEL_SECTORS           ; n. settori
+   105 000000BD 0000                        dw 0x0000                   ; offset
+   106 000000BF 0090                        dw 0x9000                   ; segment -> 0x1000:0 = 0x0010_0000
+   107 000000C1 05000000                    dd KERNEL_LBA               ; LBA inizio kernel
+   108 000000C5 00000000                    dd 0x00000000               ; LBA alto (dischi > 4GB)
+   109                                  
+   110 000000C9 00<rep F37h>            times 4096-($-$$) db 0
