@@ -132,7 +132,7 @@ static void hud_draw_panel_and_text(void) {
     int cols = 80, rows = 25;
     sys_getsize(&cols, &rows);
 
-    const char* title = "SNAKE (LFB)  [Frecce=muovi  P=pause  Q=esci]";
+    const char* title = "SNAKE [Arrows=move P=pause  Q=quit]";
     int tx = (cols - (int)strlen(title)) / 2;
     if (tx < 0)
         tx = 0;
@@ -142,7 +142,7 @@ static void hud_draw_panel_and_text(void) {
     s1[0] = s2[0] = line[0] = 0;
     itoa(score, s1, 10);
     itoa(hi_score, s2, 10);
-    strcpy(line, "Punti: ");
+    strcpy(line, "Score: ");
     strcat(line, s1);
     strcat(line, "    Record: ");
     strcat(line, s2);
@@ -291,8 +291,8 @@ void main(void) {
     unsigned int info = sys_gfx_info();
     if (!info) {
         sys_clear();
-        sys_write("Nessuna modalita' grafica 32 bpp disponibile.\n");
-        sys_write("Premi ENTER per uscire...\n");
+        sys_write("No 32 bpp mode available.\n");
+        sys_write("Press ENTER to exit...\n");
         while (sys_getchar() != '\n') {
         }
         sys_exit();
@@ -301,8 +301,8 @@ void main(void) {
     int H = (int)(info & 0xFFFF);
     if (W > MAX_W || H > MAX_H) {
         sys_clear();
-        sys_write("Risoluzione troppo grande (serve <= 1024x768).\n");
-        sys_write("Premi ENTER per uscire...\n");
+        sys_write("Resolution too big (requires <= 1024x768).\n");
+        sys_write("Press ENTER to exit...\n");
         while (sys_getchar() != '\n') {
         }
         sys_exit();
@@ -366,11 +366,11 @@ void main(void) {
                 fill_rect(bx, by, bw, bh, RGB(24, 26, 30));
                 frame_rect(bx, by, bw, bh, RGB(220, 220, 220));
 
-                char line1[] = "GAME OVER!  Premi ENTER per uscire";
+                char line1[] = "GAME OVER!  Press ENTER to exit...";
                 char buf1[64], buf2[64], ns[16], nh[16];
                 itoa(score, ns, 10);
                 itoa(hi_score, nh, 10);
-                strcpy(buf1, "Punteggio: ");
+                strcpy(buf1, "Score: ");
                 strcat(buf1, ns);
                 strcpy(buf2, "Record: ");
                 strcat(buf2, nh);

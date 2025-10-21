@@ -1,0 +1,538 @@
+#include "asoapi.h"
+#include "../lib/string.h"
+#include "../lib/stdlib.h"
+#include <stdint.h>
+
+/* ============================= Config ============================= */
+
+#define MAX_COLS     200            // must match/fit console.h limits
+#define MAX_ROWS     100
+#define TAB_WIDTH    4
+
+#define ATTR_TEXT      0x0F         // white on black
+#define ATTR_STATUS    0x1E         // yellow on blue
+#define ATTR_GUTTER    0x08         // dark gray
+#define ATTR_GUTTERSEP 0x07         // light gray
+
+/* ============================= State ============================== */
+
+static char   buf[8192];            // text buffer (~8KB)
+static int    len = 0;              // bytes used
+static char   filename[32] = "note.txt";
+
+static int    scr_cols = 80, scr_rows = 25; // live console size
+static int    gutter_w = 6;         // digits + 1 sep column -> set at render
+
+// document-cursor (column/row in the file, 0-based)
+static int    doc_x = 0, doc_y = 0;
+// viewport top-left in document coords
+static int    view_x = 0, view_y = 0;
+
+// mode/flags
+static int    insert_mode = 1;
+static int    dirty = 0;
+
+// scratch framebuffer for sys_blit
+static aso_cell_t fb[MAX_COLS * MAX_ROWS];
+
+/* ============================ Utilities =========================== */
+
+// safe clamp
+static inline int clampi(int v, int lo, int hi){ return (v<lo)?lo:((v>hi)?hi:v); }
+
+// convert unsigned -> decimal; returns appended length
+static int utoa10(unsigned v, char* out){
+    char tmp[16]; int n = 0;
+    if (v == 0) { out[0] = '0'; return 1; }
+    while (v && n < (int)sizeof(tmp)) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+    for (int i = 0; i < n; ++i) out[i] = tmp[n-1-i];
+    return n;
+}
+
+// tiny strlen
+static int s_len(const char* s){ int n=0; while (s && s[n]) n++; return n; }
+
+// append literal to dest (no overrun check; we size generously)
+static char* s_cat(char* d, const char* s){ while (*s) *d++ = *s++; return d; }
+
+// count lines (cheap enough for 8KB)
+static int count_lines(void){
+    int cnt = 1;            // at least one line even if empty
+    for (int i=0;i<len;i++) if (buf[i]=='\n') cnt++;
+    return cnt;
+}
+
+/* --------- text navigation helpers on the "buf" (no wrapping) ----- */
+
+// Return start index of the line containing pos.
+static int line_start_from_pos(int pos) {
+    int p = pos;
+    while (p > 0 && buf[p - 1] != '\n') p--;
+    return p;
+}
+
+// Return length of line starting at 'start' (no trailing '\n').
+static int line_len_from_start(int start) {
+    int p = start;
+    while (p < len && buf[p] != '\n') p++;
+    return p - start;
+}
+
+// Convert (x,y) (doc coords) to buffer index, clamping x at line end.
+static int pos_from_xy(int x, int y) {
+    int p = 0;
+    // descend y lines
+    for (int r = 0; r < y && p < len; r++) {
+        while (p < len && buf[p] != '\n') p++;
+        if (p < len && buf[p] == '\n') p++; // skip newline
+    }
+    // advance x within the line
+    int start = p;
+    int L = line_len_from_start(start);
+    if (x > L) x = L;
+    return start + x;
+}
+
+// get current line start and length for doc_y
+static void cur_line_info(int* out_start, int* out_len){
+    int s = pos_from_xy(0, doc_y);
+    if (out_start) *out_start = s;
+    if (out_len)   *out_len   = line_len_from_start(s);
+}
+
+/* ============================ Rendering =========================== */
+
+static inline void fb_put(int x,int y,char ch,uint8_t attr){
+    fb[y*scr_cols + x].ch   = ch;
+    fb[y*scr_cols + x].attr = attr;
+}
+
+static void fb_clear(uint8_t attr){
+    int total = scr_cols * scr_rows;
+    for (int i=0;i<total;i++){ fb[i].ch = ' '; fb[i].attr = attr; }
+}
+
+static void draw_status_line(const char* msg){
+    // build a single padded line using ATTR_STATUS
+    int y = scr_rows - 1;
+    int i = 0;
+    for (; i < scr_cols && msg[i]; ++i) fb_put(i,y,msg[i],ATTR_STATUS);
+    for (; i < scr_cols; ++i)           fb_put(i,y,' ',ATTR_STATUS);
+}
+
+static void build_status(char* out, int cap){
+    // [*] filename  Ln x, Col y | bytes N | lines L | INS/OVR | WxH
+    // keep it simple to avoid pulling full printf
+    char* d = out;
+    if (dirty) *d++='*';
+    d = s_cat(d, filename); *d++=' ';
+
+    d = s_cat(d, " Ln ");
+    d += utoa10((unsigned)(doc_y+1), d);
+    d = s_cat(d, ", Col ");
+    d += utoa10((unsigned)(doc_x+1), d);
+
+    d = s_cat(d, " | bytes ");
+    d += utoa10((unsigned)len, d);
+
+    d = s_cat(d, " | lines ");
+    d += utoa10((unsigned)count_lines(), d);
+
+    d = s_cat(d, " | ");
+    d = s_cat(d, insert_mode ? "INS" : "OVR");
+
+    d = s_cat(d, " | ");
+    d += utoa10((unsigned)scr_cols, d);
+    *d++ = 'x';
+    d += utoa10((unsigned)scr_rows, d);
+
+    *d = 0;
+}
+
+static void ensure_cursor_visible(void){
+    int text_cols = scr_cols - gutter_w;         // columns usable for text
+    int text_rows = scr_rows - 1;                // last row is status
+
+    // vertical
+    if (doc_y < view_y) view_y = doc_y;
+    if (doc_y >= view_y + text_rows) view_y = doc_y - (text_rows - 1);
+
+    // horizontal
+    if (doc_x < view_x) view_x = doc_x;
+    if (doc_x >= view_x + text_cols) view_x = doc_x - (text_cols - 1);
+
+    if (view_y < 0) view_y = 0;
+    if (view_x < 0) view_x = 0;
+}
+
+static void render(){
+    // fetch screen size (dynamic)
+    sys_getsize(&scr_cols, &scr_rows);
+    if (scr_cols < 20) scr_cols = 20;
+    if (scr_rows < 5)  scr_rows = 5;
+
+    // choose gutter width for the current total line count
+    int lines = count_lines();
+    int digits = 1; int t = lines;
+    while (t >= 10) { t /= 10; digits++; }
+    gutter_w = (digits < 3 ? 3 : digits) + 1; // digits + separator col
+    if (gutter_w > 12) gutter_w = 12;
+    if (gutter_w >= scr_cols) gutter_w = scr_cols - 1;
+
+    ensure_cursor_visible();
+
+    fb_clear(ATTR_TEXT);
+
+    // text area height
+    int text_rows = scr_rows - 1;
+    int text_cols = scr_cols - gutter_w;
+
+    // draw gutter background and separator
+    for (int y=0; y<text_rows; ++y){
+        // line number = view_y + y + 1
+        int ln = view_y + y + 1;
+        // write right-aligned ln
+        int tmp_ln = ln;
+        for (int gx = gutter_w-2; gx >= 0; --gx){
+            char ch = ' ';
+            if (tmp_ln > 0){
+                ch = (char)('0' + (tmp_ln % 10));
+                tmp_ln /= 10;
+            }
+            fb_put(gx, y, ch, ATTR_GUTTER);
+        }
+        // separator
+        fb_put(gutter_w-1, y, '|', ATTR_GUTTERSEP);
+    }
+
+    // draw text lines (no wrapping; horizontally scrolled by view_x)
+    for (int row = 0; row < text_rows; ++row){
+        int doc_row = view_y + row;
+
+        // find line start for doc_row
+        int p = 0;
+        for (int r = 0; r < doc_row && p < len; r++){
+            while (p < len && buf[p] != '\n') p++;
+            if (p < len && buf[p] == '\n') p++;
+        }
+        int start = p;
+        int L = (doc_row < lines) ? line_len_from_start(start) : 0;
+
+        int off = (view_x < L) ? view_x : L;            // skip left columns
+        for (int x = 0; x < text_cols; ++x){
+            char ch = ' ';
+            if (off + x < L) ch = buf[start + off + x];
+            fb_put(gutter_w + x, row, ch, ATTR_TEXT);
+        }
+    }
+
+    // status line
+    char status[128]; status[0] = 0;
+    build_status(status, sizeof(status));
+    draw_status_line(status);
+
+    // blit once
+    sys_blit(fb, scr_cols * scr_rows);
+
+    // set cursor on-screen position
+    int cur_sx = gutter_w + (doc_x - view_x);
+    int cur_sy = (doc_y - view_y);
+    // keep inside the text area bounds
+    if (cur_sy < 0) cur_sy = 0; if (cur_sy >= text_rows) cur_sy = text_rows-1;
+    if (cur_sx < gutter_w) cur_sx = gutter_w; if (cur_sx >= scr_cols) cur_sx = scr_cols-1;
+    sys_setcursor(cur_sx, cur_sy);
+}
+
+/* ============================ Editing ============================= */
+
+static void mark_dirty(void){ dirty = 1; }
+
+// insert raw byte at current doc cursor
+static void insert_byte_at_cursor(char c){
+    if (len >= (int)sizeof(buf) - 1) return;
+    int pos = pos_from_xy(doc_x, doc_y);
+
+    // shift right
+    for (int i = len; i > pos; --i) buf[i] = buf[i-1];
+    buf[pos] = c; len++;
+
+    if (c == '\n'){ doc_y++; doc_x = 0; }
+    else          { doc_x++; }
+    mark_dirty();
+}
+
+static void overwrite_byte_at_cursor(char c){
+    int pos = pos_from_xy(doc_x, doc_y);
+    int s, L; cur_line_info(&s, &L);
+
+    if (c == '\n'){
+        // overwrite newline is same as insert newline at end of line
+        insert_byte_at_cursor('\n');
+        return;
+    }
+
+    if (doc_x < L){
+        buf[pos] = c;
+        doc_x++;
+        mark_dirty();
+    } else {
+        // past EOL => same as insert
+        insert_byte_at_cursor(c);
+    }
+}
+
+static void backspace_at_cursor(void){
+    int pos = pos_from_xy(doc_x, doc_y);
+    if (pos == 0) return;
+
+    if (doc_x == 0){
+        // join with previous line: remove newline before this line
+        int s = line_start_from_pos(pos);
+        if (s > 0){
+            for (int i = s - 1; i < len - 1; ++i) buf[i] = buf[i+1];
+            len--;
+            // move cursor to end of previous line
+            int ps = line_start_from_pos(s - 1);
+            int L  = line_len_from_start(ps);
+            doc_y--;
+            doc_x = L;
+            mark_dirty();
+            return;
+        }
+    }
+
+    // delete char before cursor
+    for (int i = pos - 1; i < len - 1; ++i) buf[i] = buf[i+1];
+    len--; doc_x--;
+    mark_dirty();
+}
+
+/* ============================ Movement ============================ */
+
+static void move_left(void){
+    if (doc_x > 0){ doc_x--; return; }
+    if (doc_y > 0){
+        doc_y--;
+        int s = pos_from_xy(0, doc_y);
+        doc_x = line_len_from_start(s);
+    }
+}
+
+static void move_right(void){
+    int s, L; cur_line_info(&s,&L);
+    if (doc_x < L){ doc_x++; return; }
+
+    // at EOL -> go to next line start if exists
+    int p = s + L;
+    if (p < len && buf[p] == '\n'){
+        doc_y++; doc_x = 0;
+    }
+}
+
+static void move_up(void){
+    if (doc_y == 0) return;
+    int want = doc_x;
+    doc_y--;
+    int s, L; cur_line_info(&s,&L);
+    if (want > L) want = L;
+    doc_x = want;
+}
+
+static void move_down(void){
+    // if already on last line, do nothing
+    // count quick: move to next line only if newline exists below
+    int p = pos_from_xy(0, doc_y);
+    while (p < len && buf[p] != '\n') p++;
+    if (p >= len) return;
+
+    int want = doc_x;
+    doc_y++;
+    int s, L; cur_line_info(&s,&L);
+    if (want > L) want = L;
+    doc_x = want;
+}
+
+static void go_line_start(void){ doc_x = 0; }
+static void go_line_end(void){ int s,L; cur_line_info(&s,&L); doc_x = L; }
+
+/* ============================= Saving ============================= */
+
+static void save_now(void){
+    int r = sys_writefile(filename, buf, len);
+    dirty = (r == 0) ? 0 : dirty; // clear dirty on success
+    // transient status message
+    draw_status_line((r == 0) ? "[Saved]" : "[Save ERROR]");
+    sys_blit(fb, scr_cols * scr_rows);
+}
+
+/* ========================== Tiny prompts ========================== */
+
+static int prompt_input(const char* title, char* out, int maxlen){
+    // simple inline input on status bar. returns length, or -1 if canceled
+    int n = 0;
+    out[0] = 0;
+
+    while (1){
+        // build prompt: <title> out...
+        char line[128]; char* d = line;
+        d = s_cat(d, title); *d++=' ';
+        for (int i=0;i<n && (d - line) < (int)sizeof(line)-1; ++i) *d++ = out[i];
+        *d = 0;
+
+        draw_status_line(line);
+        sys_blit(fb, scr_cols * scr_rows);
+
+        char c = (char)sys_getchar();
+        if (c == 27){ // ESC
+            draw_status_line("Canceled");
+            sys_blit(fb, scr_cols * scr_rows);
+            return -1;
+        } else if (c == '\n' || c == '\r'){
+            return n;
+        } else if (c == '\b'){
+            if (n > 0){ n--; out[n] = 0; }
+        } else if (c >= 32 && c < 127){
+            if (n < maxlen-1){ out[n++] = c; out[n] = 0; }
+        }
+    }
+}
+
+static int find_forward(const char* needle){
+    if (!needle || !needle[0]) return -1;
+    int start = pos_from_xy(doc_x, doc_y);
+    int nlen = s_len(needle);
+    for (int i = start; i + nlen <= len; ++i){
+        int j = 0;
+        while (j < nlen && buf[i+j] == needle[j]) j++;
+        if (j == nlen) return i;
+    }
+    return -1;
+}
+
+static void jump_cursor_to_pos(int pos){
+    // compute doc_y and doc_x for buffer index pos
+    int p = 0; int y = 0;
+    while (p < pos && p < len){
+        if (buf[p] == '\n'){ y++; }
+        p++;
+    }
+    int s = line_start_from_pos(pos);
+    int x = pos - s;
+    doc_y = y; doc_x = x;
+}
+
+/* ============================= Main =============================== */
+
+void main(void) {
+    // filename from arg if provided
+    int n = sys_getarg(filename, sizeof(filename));
+    if (n <= 0) strcpy(filename, "note.txt");
+
+    // read file if exists
+    int rd = sys_readfile(filename, buf, sizeof(buf) - 1);
+    if (rd > 0) len = rd; else len = 0;
+
+    // initial clear + draw
+    sys_clear();
+    sys_getsize(&scr_cols, &scr_rows);
+    render();
+
+    while (1) {
+        // poll size in case window/grid changed
+        int cols, rows; sys_getsize(&cols, &rows);
+        if (cols != scr_cols || rows != scr_rows) {
+            scr_cols = cols; scr_rows = rows;
+            render();
+        }
+
+        char c = sys_getchar();
+
+        if (c == 27) {
+            // ESC -> save & exit
+            save_now();
+            sys_exit();
+        }
+        else if ((unsigned char)c == 19) {
+            // Ctrl+S -> save
+            save_now();
+            render();
+        }
+        else if ((unsigned char)c == 17) {
+            // Ctrl+Q -> quit without saving
+            sys_exit();
+        }
+        else if ((unsigned char)c == 15) {
+            // Ctrl+O -> toggle insert/overwrite
+            insert_mode = !insert_mode;
+            render();
+        }
+        else if ((unsigned char)c == 6) {
+            // Ctrl+F -> find
+            char needle[64];
+            if (prompt_input("Find:", needle, sizeof(needle)) >= 0){
+                int at = find_forward(needle);
+                if (at >= 0) jump_cursor_to_pos(at);
+                draw_status_line((at>=0) ? "[Found]" : "[Not found]");
+                sys_blit(fb, scr_cols * scr_rows);
+            }
+            render();
+        }
+        else if ((unsigned char)c == 12) {
+            // Ctrl+L -> goto line
+            char bufnum[16];
+            if (prompt_input("Goto line:", bufnum, sizeof(bufnum)) >= 0){
+                // simple atoi
+                int v = 0; for (int i=0; bufnum[i]; ++i) if (bufnum[i]>='0'&&bufnum[i]<='9') v = v*10 + (bufnum[i]-'0');
+                int total = count_lines();
+                if (v < 1) v = 1; if (v > total) v = total;
+                doc_y = v-1; go_line_end(); // place at end; feels nicer
+            }
+            render();
+        }
+        else if ((unsigned char)c == 1) {
+            // Ctrl+A -> Home
+            go_line_start(); render();
+        }
+        else if ((unsigned char)c == 5) {
+            // Ctrl+E -> End
+            go_line_end(); render();
+        }
+        else if (c == '\t') {
+            // insert spaces to next tab stop
+            int s, L; cur_line_info(&s,&L);
+            int to = TAB_WIDTH - (doc_x % TAB_WIDTH);
+            while (to-- > 0){
+                if (insert_mode) insert_byte_at_cursor(' ');
+                else             overwrite_byte_at_cursor(' ');
+            }
+            render();
+        }
+        else if (c == '\n' || c == '\r') {
+            if (insert_mode) insert_byte_at_cursor('\n');
+            else             overwrite_byte_at_cursor('\n');
+            render();
+        }
+        else if (c == '\b') {
+            backspace_at_cursor();
+            render();
+        }
+        else if ((unsigned char)c == KEY_LEFT) {
+            move_left();  render();
+        }
+        else if ((unsigned char)c == KEY_RIGHT) {
+            move_right(); render();
+        }
+        else if ((unsigned char)c == KEY_UP) {
+            move_up();    render();
+        }
+        else if ((unsigned char)c == KEY_DOWN) {
+            move_down();  render();
+        }
+        else if (c >= 32 && c < 127) {
+            if (insert_mode) insert_byte_at_cursor(c);
+            else             overwrite_byte_at_cursor(c);
+            render();
+        }
+        // ignore the rest
+    }
+}

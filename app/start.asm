@@ -3,10 +3,10 @@ global _start
 extern main
 
 _start:
-    ; stack? usi quello del kernel: va bene per ora
+    ; stack? use the kernel one, good for now 
     call main
 
-    ; se main ritorna, fai una exit di cortesia
+    ; if main returns, exit 
     mov eax, 2            ; SYSCALL_EXIT
     int 0x80
 
