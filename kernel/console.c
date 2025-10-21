@@ -174,3 +174,45 @@ void console_put_at_color(int x, int y, char c, uint8_t attr) {
         vga_putchar_at(x, y, c, attr);
 }
 
+void console_redraw(void) {
+    if (!use_gfx) {
+        vga_clear();
+
+        for (int y = 0; y < rows; y++) {
+            for (int x = 0; x < cols; x++) {
+                vga_putchar_at(x, y, screen_buf[y][x], 0x0F);
+            }
+        }
+        vga_set_pos(cursor_x, cursor_y);
+
+        return;
+    }
+
+    for (int y = 0; y < rows; y++) {
+        for (int x = 0; x < cols; x++) {
+            char c = screen_buf[y][x];
+
+            if (!c || c == ' ')
+                continue;
+            gfx_draw_char_fg(x * CHAR_W, y * CHAR_H, c, fg_col);
+        }
+    }
+}
+
+void console_overlay_row_fg(int row) {
+    if (!use_gfx)
+        return;
+
+    if (row < 0 || row >= rows)
+        return;
+
+    int y0 = row * CHAR_H;
+
+    for (int x = 0; x < cols; x++) {
+        char c = screen_buf[row][x];
+
+        if (!c || c == ' ')
+            continue;
+        gfx_draw_char_fg(x * CHAR_W, y0, c, fg_col);
+    }
+}

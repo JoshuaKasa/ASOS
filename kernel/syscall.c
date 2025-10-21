@@ -309,6 +309,42 @@ static uint32_t sys_gfx_putpx_impl(uint32_t a, uint32_t b, uint32_t c, uint32_t 
     return 0;
 }
 
+static uint32_t sys_gfx_blit_impl(uint32_t a, uint32_t ebx, uint32_t c, uint32_t d) {
+    (void)a; (void)c; (void)d;
+
+    const gfx_info_t* gi = gfx_info();
+    if (!gi || gi->bpp != 32)
+        return (uint32_t)-1;
+
+    const uint32_t* src = (const uint32_t*)ebx;
+    if (!src)
+        return (uint32_t)-2;
+
+    int w = gi->w;
+    int h = gi->h;
+    uint8_t* fb = (uint8_t*)(uintptr_t)gi->fb;
+    int pitch = gi->pitch;
+
+    for (int y = 0; y < h; y++) {
+        uint32_t* dst = (uint32_t*)(fb + (size_t)y * pitch);
+        const uint32_t* srow = src + (size_t)y * w;
+
+        for (int x = 0; x < w; x++) {
+            uint32_t rgb = srow[x];
+            uint32_t bgr = ((rgb & 0x000000FF) << 16)
+                         |  (rgb & 0x0000FF00)
+                         | ((rgb & 0x00FF0000) >> 16);
+            dst[x] = bgr;
+        }
+
+        // After finishing a full 16-px text row, overlay its glyphs immediately
+        if ((y % CON_CHAR_H) == (CON_CHAR_H - 1))
+            console_overlay_row_fg(y / CON_CHAR_H);
+    }
+
+    return (uint32_t)(w * h);
+}
+
 // Dispatch table
 static uint32_t sys_unknown_impl(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx) {
     (void)eax; (void)ebx; (void)ecx; (void)edx;
@@ -343,6 +379,7 @@ static const sysfn_t sys_table[] = {
     [SYSCALL_GFX_INFO]    = sys_gfx_info_impl,
     [SYSCALL_GFX_CLEAR]   = sys_gfx_clear_impl,
     [SYSCALL_GFX_PUTPX]   = sys_gfx_putpx_impl,
+    [SYSCALL_GFX_BLIT]    = sys_gfx_blit_impl,
 };
 
 uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx) {

@@ -15,5 +15,7 @@ void gfx_putpixel(int x, int y, uint32_t rgba);
 void gfx_fillrect(int x,int y,int w,int h, uint32_t rgba);
 void gfx_draw_char(int x,int y, char c, uint32_t fg, uint32_t bg);
 void gfx_draw_text(int x,int y, const char* s, uint32_t fg, uint32_t bg);
+void gfx_blit_rgb(const uint32_t* src);
 uint32_t gfx_get_pixel(int x, int y);
 const gfx_info_t* gfx_info(void);
+void gfx_draw_char_fg(int x, int y, char c, uint32_t fg);

@@ -1,6 +1,11 @@
 #pragma once
 #include <stdint.h>
 
+enum {
+    CON_CHAR_W = 8,
+    CON_CHAR_H = 16,
+};
+
 void console_init(int use_gfx);
 void console_clear(void);
 void console_write(const char* s);
@@ -11,3 +16,5 @@ void console_setcursor(int x, int y);
 void console_put_at_color(int x, int y, char c, uint8_t attr);
 void console_setcursor(int x, int y);
 void console_get_size(int* cols, int* rows);
+void console_redraw(void);
+void console_overlay_row_fg(int row);

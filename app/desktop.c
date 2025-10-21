@@ -45,7 +45,6 @@ static void window(int x, int y, int w, int h, const char* title, unsigned char 
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++)
             put(x + i, y + j, ' ', fill);
-
     put(x, y, 218, frame);
     put(x + w - 1, y, 191, frame);
     put(x, y + h - 1, 192, frame);
@@ -54,13 +53,10 @@ static void window(int x, int y, int w, int h, const char* title, unsigned char 
     hline(x + 1, y + h - 1, w - 2, frame);
     vline(x, y + 1, h - 2, frame);
     vline(x + w - 1, y + 1, h - 2, frame);
-
     if (title) {
         int len = (int)strlen(title);
-
         if (len > w - 4)
             len = w - 4;
-
         int tx = x + (w - len) / 2;
         text(tx, y, title, title_attr);
     }
@@ -79,7 +75,7 @@ typedef struct {
     const char* bin;
 } App;
 static const App apps[] = {
-    {"Terminal", "terminal.bin"}, {"TextEdit", "textedit.bin"}, {"Snake", "snake.bin"}, {"Pong", "pong.bin"}, {"Calc", "calculator.bin"}, {"Cube", "3d.bin"}
+    {"Terminal", "terminal.bin"}, {"TextEdit", "textedit.bin"}, {"Snake", "snake.bin"}, {"Pong", "pong.bin"}, {"Calc", "calculator.bin"},
 };
 static const int APP_N = (int)(sizeof(apps) / sizeof(apps[0]));
 
@@ -90,14 +86,12 @@ static void draw_icon_tile(int rx, int ry, const char* label, int focused) {
     for (int j = 0; j < 5; j++)
         for (int i = 0; i < 9; i++)
             put(rx + i, ry + j, ' ', bg);
-
-    // Fake tiny icon
+    // fake tiny icon
     put(rx + 2, ry + 1, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
     put(rx + 3, ry + 1, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
     put(rx + 2, ry + 2, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
     put(rx + 3, ry + 2, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-
-    // Label centered under
+    // label centered under
     int lw = (int)strlen(label);
     if (lw > 9)
         lw = 9;
@@ -109,11 +103,9 @@ static void draw_apps(int sel) {
     int x0 = 2, y0 = 3;
     window(x0 - 2, y0 - 2, 9 * 4 + 6, 8, " Applications ", ATTR(C_LIGHTGRAY, C_BLACK), ATTR(C_YELLOW, C_BLACK), ATTR(C_BLACK, C_BLACK));
     int col = 0, row = 0;
-
     for (int i = 0; i < APP_N; i++) {
         int rx = x0 + col * 9 + col * 3;
         int ry = y0 + row * 6;
-
         draw_icon_tile(rx, ry, apps[i].label, i == sel);
         if (++col == 4) {
             col = 0;
@@ -137,28 +129,22 @@ static int ends_with_txt(const char* s) {
 }
 
 static void load_files(void) {
-    // Pull all files from FS and keep the .txt ones (case-insensitive)
+    // pull all files from FS and keep the .txt ones (case-insensitive)
     char raw[MAX_FILES * NAME_MAX];
     int rc = sys_enumfiles(raw, MAX_FILES, NAME_MAX);
-
     file_count = 0;
     if (rc > 0) {
         for (int i = 0; i < rc; i++) {
-
             char* name = raw + i * NAME_MAX;
-
             if (ends_with_txt(name)) {
-                // Store for UI
+                // store for UI
                 int L = (int)strlen(name);
-
                 if (L >= NAME_MAX)
                     L = NAME_MAX - 1;
                 for (int k = 0; k < L; k++)
                     file_names[file_count][k] = name[k];
-
                 file_names[file_count][L] = 0;
                 file_count++;
-
                 if (file_count >= MAX_FILES)
                     break;
             }
@@ -172,10 +158,9 @@ static void draw_files(int sel) {
     int list_y = y + 2;
     int per_page = h - 3;
     int page = (sel / per_page) * per_page;
-
     for (int i = 0; i < per_page; i++) {
         int idx = page + i;
-        // Blank line
+        // blank line
         for (int X = 0; X < w - 4; X++)
             put(x + 2 + X, list_y + i, ' ', ATTR(C_WHITE, C_BLACK));
         if (idx < file_count) {
@@ -186,10 +171,10 @@ static void draw_files(int sel) {
     }
 }
 
-// Main 
+// ---------- Main ----------
 void main(void) {
     sys_clear();
-    sys_mouse_show(0); // Hide cursor sprite just in case
+    sys_mouse_show(0);  // hide cursor sprite just in case
     int cols = 80, rows = 25;
     sys_getsize(&cols, &rows);
 
@@ -200,16 +185,15 @@ void main(void) {
     // load .txt files for the right pane
     load_files();
 
-    // Selection state
+    // selection state
     int focus = 0;  // 0 = apps, 1 = files
     int sel_app = 0;
     int sel_file = 0;
 
-    // Draw chrome
+    // draw chrome
     for (int y = 0; y < H - 1; y++)
         for (int x = 0; x < W; x++)
             put(x, y, ' ', ATTR(C_WHITE, C_BLACK));
-
     text(2, 1, "ASOS Desktop", ATTR(C_YELLOW, C_BLACK));
     text(20, 1, "[Arrows] Move   [TAB] Switch   [ENTER] Open   [Q] Quit", ATTR(C_LIGHTGRAY, C_BLACK));
     draw_apps(sel_app);
@@ -222,7 +206,6 @@ void main(void) {
 
     while (1) {
         unsigned int ch = sys_trygetchar();
-
         if (ch) {
             char c = (char)ch;
             if (c == 'q' || c == 'Q') {
@@ -235,79 +218,66 @@ void main(void) {
                 // repaint focus highlight
                 draw_apps(sel_app);
                 draw_files(sel_file);
-            } 
-            else if ((unsigned char)c == KEY_LEFT) {
+            } else if ((unsigned char)c == KEY_LEFT) {
                 if (focus == 0) {
                     if (sel_app > 0)
                         sel_app--;
                     draw_apps(sel_app);
-                } 
-                else { /* files pane doesn't use LEFT */
+                } else { /* files pane doesn't use LEFT */
                 }
-            } 
-            else if ((unsigned char)c == KEY_RIGHT) {
+            } else if ((unsigned char)c == KEY_RIGHT) {
                 if (focus == 0) {
                     if (sel_app < APP_N - 1)
                         sel_app++;
                     draw_apps(sel_app);
                 }
-            } 
-            else if ((unsigned char)c == KEY_UP) {
+            } else if ((unsigned char)c == KEY_UP) {
                 if (focus == 0) {
                     if (sel_app >= 4)
                         sel_app -= 4;
                     draw_apps(sel_app);
-                } 
-                else {
+                } else {
                     if (sel_file > 0)
                         sel_file--;
                     draw_files(sel_file);
                 }
-            } 
-            else if ((unsigned char)c == KEY_DOWN) {
+            } else if ((unsigned char)c == KEY_DOWN) {
                 if (focus == 0) {
                     if (sel_app + 4 < APP_N)
                         sel_app += 4;
                     draw_apps(sel_app);
-                } 
-                else {
+                } else {
                     if (sel_file + 1 < file_count)
                         sel_file++;
                     draw_files(sel_file);
                 }
-            } 
-            else if (c == '\n') {
+            } else if (c == '\n') {
                 if (focus == 0) {
-                    // Launch selected app
+                    // launch selected app
                     sys_write("Launching ");
                     sys_write(apps[sel_app].label);
                     sys_write("...\n");
                     sys_exec(apps[sel_app].bin);
-
-                    // If back from app, re-draw UI
+                    // if back from app, re-draw UI
                     sys_clear();
                     load_files();
                     draw_apps(sel_app);
                     draw_files(sel_file);
                     status("Back from app.");
-                } 
-                else {
+                } else {
                     if (file_count > 0) {
-                        // Open textedit on file
+                        // open textedit on file
                         char cmd[64];
-
                         strcpy(cmd, "textedit.bin ");
                         strcat(cmd, file_names[sel_file]);
                         sys_write("Editing ");
                         sys_write(file_names[sel_file]);
                         sys_write("...\n");
                         sys_exec(cmd);
-
                         // return -> redraw (file list may have changed size if saved)
                         sys_clear();
                         load_files();
                         draw_apps(sel_app);
-
                         if (sel_file >= file_count && file_count > 0)
                             sel_file = file_count - 1;
                         draw_files(sel_file);
@@ -318,7 +288,6 @@ void main(void) {
         }
 
         unsigned now = sys_getticks();
-
         if ((int)(now - refresh) >= 0) {
             sys_setcursor(W - 1, H - 1);
             refresh += 8;

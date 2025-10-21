@@ -29,6 +29,7 @@ enum {
     SYSCALL_GFX_INFO  = 20,
     SYSCALL_GFX_CLEAR = 21,
     SYSCALL_GFX_PUTPX = 22,
+    SYSCALL_GFX_BLIT = 23,
 };
 typedef struct { 
     char ch; 
@@ -240,6 +241,17 @@ static inline int sys_gfx_putpixel(int x,int y,unsigned int rgb){
     asm volatile("int $0x80" 
                 : "=a"(ret) 
                 : "a"(SYSCALL_GFX_PUTPX), "b"(x), "c"(y), "d"(rgb) 
+                : "memory","cc");
+
+    return ret;
+}
+
+static inline int sys_gfx_blit(const unsigned int* rgb32_fullscreen){
+    int ret;
+
+    asm volatile("int $0x80"
+                : "=a"(ret)
+                : "a"(SYSCALL_GFX_BLIT), "b"(rgb32_fullscreen)
                 : "memory","cc");
 
     return ret;

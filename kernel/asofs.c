@@ -220,5 +220,6 @@ int asofs_enum_files(char* out, int max_entries, int name_max) {
 }
 
 void asofs_return_to_kernel(void) {
-    asm volatile("jmp kernel_main");
+    extern void kernel_run_shell_loop(void);
+    asm volatile("jmp kernel_run_shell_loop"); // Avoid styack frame
 }

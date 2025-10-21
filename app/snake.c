@@ -1,242 +1,409 @@
-#include "asoapi.h"
-#include "../lib/string.h"
 #include "../lib/stdlib.h"
+#include "../lib/string.h"
+#include "asoapi.h"
 
-#define C_BLACK   0x0
-#define C_BLUE    0x1
-#define C_GREEN   0x2
-#define C_CYAN    0x3
-#define C_RED     0x4
-#define C_MAGENTA 0x5
-#define C_BROWN   0x6
-#define C_GRAY    0x7
-#define C_LIGHTGRAY 0x7
-#define C_DARKGRAY  0x8
-#define C_YELLOW  0xE
-#define C_WHITE   0xF
+#define MAX_W 1024
+#define MAX_H 768
+#define RGB(r, g, b) (((unsigned)(r) & 0xFF) << 16 | ((unsigned)(g) & 0xFF) << 8 | ((unsigned)(b) & 0xFF))
 
-#define ATTR(fg,bg)   (((bg)<<4)|((fg)&0x0F))
-
-#define FIELD_W   30
-#define FIELD_H   20
-#define ORG_X     10
-#define ORG_Y     2
-
-#define CELL_W    2
-
-#define CH_FULL   ((char)219)
-#define CH_APPLE  ((char)219)
-#define CH_EMPTY  ' '
-
-#define MAX_LEN   (FIELD_W*FIELD_H)
-typedef struct { int x, y; } pt;
-
-static pt snake[MAX_LEN];
-static int len = 3;
-static int dirx = 1, diry = 0;
-static pt apple;
-
-static int score = 0, hi_score = 0;
-static int paused = 0;
+static unsigned int backbuf[MAX_W * MAX_H];
+static int G_W = 0, G_H = 0;
 
 static unsigned int rng_state = 2463534242u;
 static inline unsigned int xorshift32(void) {
     unsigned int x = rng_state;
-    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
     return rng_state = x;
 }
 
-static int inside(int x, int y) {
-    return x >= 0 && x < FIELD_W && y >= 0 && y < FIELD_H;
-}
+typedef struct {
+    int x, y;
+} pt;
+#define MAX_CELLS 8192
 
-static int on_snake(int x, int y) {
-    for (int i = 0; i < len; i++)
-        if (snake[i].x == x && snake[i].y == y) return 1;
-    return 0;
-}
+static int MARGIN;
+static int HUD_PX;
+static int CELL;
+static int FX0, FY0;
+static int COLS, ROWS;
 
-static inline void put2(int x, int y, char ch, unsigned char attr) {
-    sys_put_at(x,     y, ch, attr);
-    sys_put_at(x + 1, y, ch, attr);
-}
+static pt snake[MAX_CELLS];
+static int len, dirx, diry;
+static pt apple;
+static int score = 0, hi_score = 0;
+static int paused = 0;
 
-static inline void draw_cell(int fx, int fy, char ch, unsigned char attr) {
-    int sx = ORG_X + fx * CELL_W;
-    int sy = ORG_Y + fy;
-    put2(sx, sy, ch, attr);
+static inline void pset(int x, int y, unsigned int rgb) {
+    if ((unsigned)x < (unsigned)G_W && (unsigned)y < (unsigned)G_H)
+        backbuf[y * G_W + x] = rgb;
 }
-
-static inline void fill_field_bg(unsigned char attr_bg) {
-    for (int y = 0; y < FIELD_H; ++y)
-        for (int x = 0; x < FIELD_W; ++x)
-            draw_cell(x, y, CH_EMPTY, attr_bg);
-}
-
-static void draw_border(void) {
-    unsigned char col = ATTR(C_WHITE, C_BLACK);
-    // Top/bottom
-    for (int x = 0; x < FIELD_W * CELL_W + 2; x++) {
-        sys_put_at(ORG_X - 1 + x, ORG_Y - 1, CH_FULL, col);
-        sys_put_at(ORG_X - 1 + x, ORG_Y + FIELD_H, CH_FULL, col);
+static void fill_rect(int x, int y, int w, int h, unsigned int rgb) {
+    int x2 = x + w, y2 = y + h;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x2 > G_W)
+        x2 = G_W;
+    if (y2 > G_H)
+        y2 = G_H;
+    if (x >= x2 || y >= y2)
+        return;
+    for (int j = y; j < y2; ++j) {
+        unsigned int* row = &backbuf[j * G_W];
+        for (int i = x; i < x2; ++i)
+            row[i] = rgb;
     }
-    // Sides
-    for (int y = 0; y < FIELD_H + 1; y++) {
-        sys_put_at(ORG_X - 1, ORG_Y - 1 + y, CH_FULL, col);
-        sys_put_at(ORG_X + FIELD_W * CELL_W, ORG_Y - 1 + y, CH_FULL, col);
+}
+static void frame_rect(int x, int y, int w, int h, unsigned int rgb) {
+    if (w <= 0 || h <= 0)
+        return;
+    for (int i = 0; i < w; i++) {
+        pset(x + i, y, rgb);
+        pset(x + i, y + h - 1, rgb);
+    }
+    for (int j = 0; j < h; j++) {
+        pset(x, y + j, rgb);
+        pset(x + w - 1, y + j, rgb);
     }
 }
+static inline void draw_cell_px(int cx, int cy, unsigned int rgb, int is_head) {
+    int x = FX0 + cx * CELL;
+    int y = FY0 + cy * CELL;
+    int pad = (CELL >= 18) ? (CELL / 6) : (CELL >= 12 ? CELL / 8 : CELL / 10);
+    int w = CELL - pad * 2;
+    int h = CELL - pad * 2;
+    if (w < 2)
+        w = 2;
+    if (h < 2)
+        h = 2;
 
-static void draw_snake(void) {
-    draw_cell(snake[0].x, snake[0].y, CH_FULL, ATTR(C_GREEN, C_BLACK));
-    for (int i = 1; i < len; i++)
-        draw_cell(snake[i].x, snake[i].y, CH_FULL, ATTR(C_GREEN, C_BLACK));
-}
+    unsigned int core = rgb;
+    unsigned int shade = RGB(0, 0, 0);
+    unsigned int light = RGB(255, 255, 255);
 
-static void erase_cell(int fx, int fy) {
-    draw_cell(fx, fy, CH_EMPTY, ATTR(C_BLACK, C_BLACK));
-}
+    fill_rect(x + pad, y + pad, w, h, core);
+    for (int i = 0; i < w; i++)
+        pset(x + pad + i, y + pad, (core & 0xFEFEFE) | 0x101010);
+    for (int j = 0; j < h; j++)
+        pset(x + pad, y + pad + j, (core & 0xFEFEFE) | 0x101010);
+    for (int i = 0; i < w; i++)
+        pset(x + pad + i, y + pad + h - 1, shade);
+    for (int j = 0; j < h; j++)
+        pset(x + pad + w - 1, y + pad + j, shade);
 
-static void draw_apple(void) {
-    draw_cell(apple.x, apple.y, CH_APPLE, ATTR(C_RED, C_BLACK));
-}
-
-static void hud(void) {
-    char b[96], n1[16], n2[16];
-    itoa(score, n1, 10); itoa(hi_score, n2, 10);
-    strcpy(b, "SNAKE  score: "); strcat(b, n1);
-    strcat(b, "   best: "); strcat(b, n2);
-    strcat(b, "   [Freccie=muovi, P=pause, Q=esci]");
-    sys_setcursor(0, ORG_Y + FIELD_H + 2);
-    sys_write(b);
-    sys_write("\n");
+    if (is_head)
+        frame_rect(x + pad, y + pad, w, h, light);
 }
 
 static void load_hiscore(void) {
     char buf[32];
-    int r = sys_readfile("snake.hi", buf, sizeof(buf)-1);
-    if (r > 0) { buf[r] = 0; hi_score = atoi(buf); }
+    int r = sys_readfile("snake.hi", buf, sizeof(buf) - 1);
+    if (r > 0) {
+        buf[r] = 0;
+        hi_score = atoi(buf);
+    }
 }
-
-static void save_hiscore(void) {
+static void save_hiscore_if_needed(void) {
     if (score > hi_score) {
-        char buf[16]; itoa(score, buf, 10);
+        char buf[16];
+        itoa(score, buf, 10);
         sys_writefile("snake.hi", buf, (int)strlen(buf));
         hi_score = score;
     }
 }
 
+static void put_str_clipped(int col, int row, const char* s, unsigned char attr) {
+    int cols = 80, rows = 25;
+    sys_getsize(&cols, &rows);
+    if (row < 0 || row >= rows)
+        return;
+    if (col < 0)
+        col = 0;
+    for (int i = 0; s[i] && col + i < cols; ++i)
+        sys_put_at(col + i, row, s[i], attr);
+}
+static void hud_draw_panel_and_text(void) {
+    fill_rect(0, 0, G_W, HUD_PX, RGB(18, 20, 24));
+    frame_rect(0, 0, G_W, HUD_PX, RGB(60, 60, 60));
+
+    int cols = 80, rows = 25;
+    sys_getsize(&cols, &rows);
+
+    const char* title = "SNAKE (LFB)  [Frecce=muovi  P=pause  Q=esci]";
+    int tx = (cols - (int)strlen(title)) / 2;
+    if (tx < 0)
+        tx = 0;
+    put_str_clipped(tx, 0, title, 0x0F);
+
+    char s1[12], s2[12], line[96];
+    s1[0] = s2[0] = line[0] = 0;
+    itoa(score, s1, 10);
+    itoa(hi_score, s2, 10);
+    strcpy(line, "Punti: ");
+    strcat(line, s1);
+    strcat(line, "    Record: ");
+    strcat(line, s2);
+    put_str_clipped(2, 1, line, 0x0F);
+
+    sys_setcursor(cols - 1, rows - 1);
+}
+
+static void compute_layout(void) {
+    int minSide = (G_W < G_H ? G_W : G_H);
+    MARGIN = minSide / 32;
+    if (MARGIN < 8)
+        MARGIN = 8;
+    HUD_PX = 32;
+
+    int availW = G_W - 2 * MARGIN;
+    int availH = G_H - 2 * MARGIN - HUD_PX;
+    if (availW < 64)
+        availW = 64;
+    if (availH < 64)
+        availH = 64;
+
+    int cellW = availW / 50;
+    int cellH = availH / 30;
+    CELL = (cellW < cellH ? cellW : cellH);
+    if (CELL < 10)
+        CELL = 10;
+    if (CELL > 40)
+        CELL = 40;
+
+    COLS = availW / CELL;
+    ROWS = availH / CELL;
+    if (COLS < 24)
+        COLS = 24;
+    if (ROWS < 18)
+        ROWS = 18;
+
+    int guard = 0;
+    while (COLS * ROWS > MAX_CELLS && guard++ < 100) {
+        CELL++;
+        COLS = availW / CELL;
+        ROWS = availH / CELL;
+    }
+
+    int fieldWpx = COLS * CELL;
+    int fieldHpx = ROWS * CELL;
+    FX0 = (G_W - fieldWpx) / 2;
+    FY0 = ((G_H - HUD_PX) - fieldHpx) / 2 + HUD_PX;
+}
+
+static int inside(int x, int y) {
+    return x >= 0 && x < COLS && y >= 0 && y < ROWS;
+}
+static int on_snake(int x, int y) {
+    for (int i = 0; i < len; ++i)
+        if (snake[i].x == x && snake[i].y == y)
+            return 1;
+    return 0;
+}
 static void spawn_apple(void) {
-    int tries = 0;
-    do {
-        int rx = (int)(xorshift32() % FIELD_W);
-        int ry = (int)(xorshift32() % FIELD_H);
-        apple.x = rx; apple.y = ry;
-        if (++tries > 2000) break;
-    } while (on_snake(apple.x, apple.y));
+    for (int tries = 0; tries < 5000; ++tries) {
+        int rx = (int)(xorshift32() % (unsigned)COLS);
+        int ry = (int)(xorshift32() % (unsigned)ROWS);
+        if (!on_snake(rx, ry)) {
+            apple.x = rx;
+            apple.y = ry;
+            return;
+        }
+    }
+    apple.x = COLS / 2;
+    apple.y = ROWS / 2;
 }
-
-static void init_game(void) {
-    sys_clear();
-    load_hiscore();
-
-    int cx = FIELD_W/2, cy = FIELD_H/2;
-    len = 3; dirx = 1; diry = 0; score = 0; paused = 0;
+static void reset_game(void) {
+    int cx = COLS / 2, cy = ROWS / 2;
+    len = 3;
+    dirx = 1;
+    diry = 0;
+    score = 0;
+    paused = 0;
     snake[0] = (pt){cx, cy};
-    snake[1] = (pt){cx-1, cy};
-    snake[2] = (pt){cx-2, cy};
-
-    fill_field_bg(ATTR(C_BLACK, C_BLACK));
-    draw_border();
+    snake[1] = (pt){cx - 1, cy};
+    snake[2] = (pt){cx - 2, cy};
     spawn_apple();
-    draw_apple();
-    draw_snake();
-    hud();
-
-    sys_setcursor(79, 24);
 }
-
 static int step(void) {
-    if (paused) return 1;
+    if (paused)
+        return 1;
 
     pt head = snake[0];
-    head.x += dirx; head.y += diry;
+    head.x += dirx;
+    head.y += diry;
 
-    if (!inside(head.x, head.y)) return 0;
+    if (!inside(head.x, head.y))
+        return 0;
     for (int i = 0; i < len; i++)
-        if (snake[i].x == head.x && snake[i].y == head.y) return 0;
+        if (snake[i].x == head.x && snake[i].y == head.y)
+            return 0;
 
-    // Apple?
     int grow = (head.x == apple.x && head.y == apple.y);
     if (grow) {
-        if (len < MAX_LEN) len++;
+        if (len < MAX_CELLS)
+            len++;
         score++;
-    } else {
-        pt tail = snake[len-1];
-        erase_cell(tail.x, tail.y);
-    }
-
-    for (int i = len-1; i > 0; i--) snake[i] = snake[i-1];
-    snake[0] = head;
-
-    if (grow) {
         spawn_apple();
-        draw_apple();
-        hud();
     }
-
-    draw_cell(snake[1].x, snake[1].y, CH_FULL, ATTR(C_GREEN, C_BLACK));
-    draw_cell(snake[0].x, snake[0].y, CH_FULL, ATTR(C_GREEN, C_BLACK));
-
-    sys_setcursor(79, 24);
+    for (int i = len - 1; i > 0; --i)
+        snake[i] = snake[i - 1];
+    snake[0] = head;
     return 1;
 }
 
-void main(void) {
-    init_game();
+static void draw_everything(void) {
+    fill_rect(0, 0, G_W, G_H, RGB(12, 14, 18));
 
-    unsigned int base = 2; // ~110ms
-    unsigned int speed = base;
-    unsigned int next = sys_getticks() + speed;
+    frame_rect(FX0 - 2, FY0 - 2, COLS * CELL + 4, ROWS * CELL + 4, RGB(220, 220, 220));
+    frame_rect(FX0 - 1, FY0 - 1, COLS * CELL + 2, ROWS * CELL + 2, RGB(80, 80, 80));
+
+    if (CELL >= 16) {
+        unsigned int gridCol = RGB(28, 32, 38);
+        for (int c = 1; c < COLS; ++c) {
+            int x = FX0 + c * CELL;
+            for (int y = FY0; y < FY0 + ROWS * CELL; ++y)
+                pset(x, y, gridCol);
+        }
+        for (int r = 1; r < ROWS; ++r) {
+            int y = FY0 + r * CELL;
+            for (int x = FX0; x < FX0 + COLS * CELL; ++x)
+                pset(x, y, gridCol);
+        }
+    }
+
+    draw_cell_px(apple.x, apple.y, RGB(215, 55, 45), 0);
+
+    for (int i = 0; i < len; i++) {
+        int head = (i == 0);
+        unsigned int col = head ? RGB(90, 220, 110) : RGB(60, 180, 85);
+        draw_cell_px(snake[i].x, snake[i].y, col, head);
+    }
+
+    hud_draw_panel_and_text();
+
+    sys_gfx_blit(backbuf);
+}
+
+void main(void) {
+    unsigned int info = sys_gfx_info();
+    if (!info) {
+        sys_clear();
+        sys_write("Nessuna modalita' grafica 32 bpp disponibile.\n");
+        sys_write("Premi ENTER per uscire...\n");
+        while (sys_getchar() != '\n') {
+        }
+        sys_exit();
+    }
+    int W = (int)((info >> 16) & 0xFFFF);
+    int H = (int)(info & 0xFFFF);
+    if (W > MAX_W || H > MAX_H) {
+        sys_clear();
+        sys_write("Risoluzione troppo grande (serve <= 1024x768).\n");
+        sys_write("Premi ENTER per uscire...\n");
+        while (sys_getchar() != '\n') {
+        }
+        sys_exit();
+    }
+    G_W = W;
+    G_H = H;
+
+    sys_mouse_show(0);
+    sys_gfx_clear(RGB(0, 0, 0));
+    sys_clear();
+
+    load_hiscore();
+    compute_layout();
+    reset_game();
+
+    const unsigned int STEP_INITIAL = 14;
+    const unsigned int STEP_MIN = 5;
+    unsigned int step_ticks = STEP_INITIAL;
+
+    unsigned int next_step = sys_getticks() + step_ticks;
+
+    draw_everything();
 
     while (1) {
-        unsigned int ch = sys_trygetchar();
-        if (ch) {
+        unsigned int ch;
+        while ((ch = sys_trygetchar()) != 0) {
             char c = (char)ch;
             if (c == 'q' || c == 'Q') {
-                save_hiscore();
-                sys_write("\nBye!\n"); 
+                save_hiscore_if_needed();
                 sys_exit();
-            }
-            else if (c == 'p' || c == 'P') {
+            } else if (c == 'p' || c == 'P') {
                 paused = !paused;
-                sys_setcursor(0, ORG_Y + FIELD_H + 3);
-                sys_write(paused ? "[PAUSA]\n" : "       \n");
+            } else if ((unsigned char)c == KEY_LEFT && dirx != +1) {
+                dirx = -1;
+                diry = 0;
+            } else if ((unsigned char)c == KEY_RIGHT && dirx != -1) {
+                dirx = +1;
+                diry = 0;
+            } else if ((unsigned char)c == KEY_UP && diry != +1) {
+                dirx = 0;
+                diry = -1;
+            } else if ((unsigned char)c == KEY_DOWN && diry != -1) {
+                dirx = 0;
+                diry = +1;
             }
-            else if ((unsigned char)c == KEY_LEFT  && dirx !=  1) { dirx = -1; diry = 0; }
-            else if ((unsigned char)c == KEY_RIGHT && dirx != -1) { dirx = +1; diry = 0; }
-            else if ((unsigned char)c == KEY_UP    && diry !=  1) { dirx = 0;  diry = -1; }
-            else if ((unsigned char)c == KEY_DOWN  && diry != -1) { dirx = 0;  diry = +1; }
         }
 
         unsigned int now = sys_getticks();
-        if ((int)(now - next) >= 0) {
+        if ((int)(now - next_step) >= 0) {
+            unsigned int target = STEP_INITIAL - (unsigned)(score / 8);
+            if (target < STEP_MIN)
+                target = STEP_MIN;
+            step_ticks = target;
+
             if (!step()) {
-                save_hiscore();
-                sys_write("\nGAME OVER!  Score: ");
-                char n[16]; itoa(score, n, 10); sys_write(n);
-                sys_write("   (best: ");
-                itoa(hi_score, n, 10); sys_write(n);
-                sys_write(")\nPremi ENTER per uscire...");
-                while (sys_getchar() != '\n') {}
+                fill_rect(0, 0, G_W, G_H, RGB(10, 10, 10));
+                hud_draw_panel_and_text();
+
+                int bw = (G_W * 3) / 5, bh = (G_H * 2) / 5;
+                int bx = (G_W - bw) / 2, by = (G_H - bh) / 2;
+                fill_rect(bx, by, bw, bh, RGB(24, 26, 30));
+                frame_rect(bx, by, bw, bh, RGB(220, 220, 220));
+
+                char line1[] = "GAME OVER!  Premi ENTER per uscire";
+                char buf1[64], buf2[64], ns[16], nh[16];
+                itoa(score, ns, 10);
+                itoa(hi_score, nh, 10);
+                strcpy(buf1, "Punteggio: ");
+                strcat(buf1, ns);
+                strcpy(buf2, "Record: ");
+                strcat(buf2, nh);
+
+                int cols = 80, rows = 25;
+                sys_getsize(&cols, &rows);
+                int cx1 = (cols - (int)strlen(line1)) / 2;
+                if (cx1 < 0)
+                    cx1 = 0;
+                int cx2 = (cols - (int)strlen(buf1)) / 2;
+                if (cx2 < 0)
+                    cx2 = 0;
+                int cx3 = (cols - (int)strlen(buf2)) / 2;
+                if (cx3 < 0)
+                    cx3 = 0;
+
+                put_str_clipped(cx1, 3, line1, 0x0F);
+                put_str_clipped(cx2, 5, buf1, 0x0F);
+                put_str_clipped(cx3, 6, buf2, 0x0F);
+
+                sys_gfx_blit(backbuf);
+
+                while (sys_getchar() != '\n') {
+                }
+                save_hiscore_if_needed();
                 sys_exit();
             }
 
-            unsigned int target = base > 1 ? base - (unsigned)(score/5) : 1;
-            if (target < 1) target = 1;
-            speed = target;
+            draw_everything();
 
-            next += speed;
+            next_step += step_ticks;
+            if ((int)(now - next_step) >= 0)
+                next_step = now + step_ticks;
         }
 
         asm volatile("hlt");

@@ -63,13 +63,16 @@ static inline void put32(int x, int y, uint32_t rgb)
     *(uint32_t*)(LFB + (size_t)y * G.pitch + (size_t)x * 4) = bgr;
 }
 
-
 void gfx_clear(uint32_t rgba) {
-    for (int y = 0; y < G.h; ++y) {
+    uint32_t bgr = ((rgba & 0x000000FF) << 16)
+                 |  (rgba & 0x0000FF00)
+                 | ((rgba & 0x00FF0000) >> 16);
+
+    for (int y = 0; y < G.h; y++) {
         uint32_t* row = (uint32_t*)(LFB + (size_t)y * G.pitch);
 
-        for (int x = 0; x < G.w; ++x)
-            row[x] = rgba;
+        for (int x = 0; x < G.w; x++)
+            row[x] = bgr;
     }
 }
 
@@ -134,3 +137,41 @@ uint32_t gfx_get_pixel(int x, int y) {
     return rr | gg | bb;
 }
 
+void gfx_blit_rgb(const uint32_t* src) {
+    if (!src)
+        return;
+
+    const gfx_info_t* gi = gfx_info();
+    if (!gi || gi->bpp != 32)
+        return;
+
+    uint32_t* dst;
+    int y;
+
+    for (y = 0; y < gi->h; y++) {
+        dst = (uint32_t*)(uintptr_t)(gi->fb + (size_t)y * gi->pitch);
+
+        for (int x = 0; x < gi->w; x++) {
+            uint32_t rgb = src[y * gi->w + x];
+
+            uint32_t bgr = ((rgb & 0x000000FF) << 16)
+                         |  (rgb & 0x0000FF00)
+                         | ((rgb & 0x00FF0000) >> 16);
+
+            dst[x] = bgr;
+        }
+    }
+}
+
+void gfx_draw_char_fg(int x, int y, char c, uint32_t fg) {
+    const uint8_t* g = FONT8x16_ADDR[(uint8_t)c];
+
+    for (int dy = 0; dy < 16; dy++) {
+        uint8_t bits = g[dy];
+
+        for (int dx = 0; dx < 8; dx++) {
+            if (bits & (0x80 >> dx))
+                gfx_putpixel(x + dx, y + dy, fg);
+        }
+    }
+}

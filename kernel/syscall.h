@@ -24,6 +24,7 @@ enum {
     SYSCALL_GFX_INFO = 20,
     SYSCALL_GFX_CLEAR = 21,
     SYSCALL_GFX_PUTPX = 22,
+    SYSCALL_GFX_BLIT = 23,
 };
 
 void syscall_init(void);
