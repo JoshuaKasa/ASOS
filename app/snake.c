@@ -1,12 +1,14 @@
 #include "../lib/stdlib.h"
 #include "../lib/string.h"
+#include "../lib/gfx2d.h"
 #include "asoapi.h"
 
 #define MAX_W 1024
 #define MAX_H 768
-#define RGB(r, g, b) (((unsigned)(r) & 0xFF) << 16 | ((unsigned)(g) & 0xFF) << 8 | ((unsigned)(b) & 0xFF))
+#define RGB(r, g, b) GFX2D_RGB(r, g, b)
 
 static unsigned int backbuf[MAX_W * MAX_H];
+static gfx2d_surface_t surface;
 static int G_W = 0, G_H = 0;
 
 static unsigned int rng_state = 2463534242u;
@@ -35,40 +37,6 @@ static pt apple;
 static int score = 0, hi_score = 0;
 static int paused = 0;
 
-static inline void pset(int x, int y, unsigned int rgb) {
-    if ((unsigned)x < (unsigned)G_W && (unsigned)y < (unsigned)G_H)
-        backbuf[y * G_W + x] = rgb;
-}
-static void fill_rect(int x, int y, int w, int h, unsigned int rgb) {
-    int x2 = x + w, y2 = y + h;
-    if (x < 0)
-        x = 0;
-    if (y < 0)
-        y = 0;
-    if (x2 > G_W)
-        x2 = G_W;
-    if (y2 > G_H)
-        y2 = G_H;
-    if (x >= x2 || y >= y2)
-        return;
-    for (int j = y; j < y2; ++j) {
-        unsigned int* row = &backbuf[j * G_W];
-        for (int i = x; i < x2; ++i)
-            row[i] = rgb;
-    }
-}
-static void frame_rect(int x, int y, int w, int h, unsigned int rgb) {
-    if (w <= 0 || h <= 0)
-        return;
-    for (int i = 0; i < w; i++) {
-        pset(x + i, y, rgb);
-        pset(x + i, y + h - 1, rgb);
-    }
-    for (int j = 0; j < h; j++) {
-        pset(x, y + j, rgb);
-        pset(x + w - 1, y + j, rgb);
-    }
-}
 static inline void draw_cell_px(int cx, int cy, unsigned int rgb, int is_head) {
     int x = FX0 + cx * CELL;
     int y = FY0 + cy * CELL;
@@ -84,18 +52,19 @@ static inline void draw_cell_px(int cx, int cy, unsigned int rgb, int is_head) {
     unsigned int shade = RGB(0, 0, 0);
     unsigned int light = RGB(255, 255, 255);
 
-    fill_rect(x + pad, y + pad, w, h, core);
+    gfx2d_fill_rect(&surface, x + pad, y + pad, w, h, core);
+    uint32_t light_edge = (core & 0xFEFEFEu) | 0x00101010u;
     for (int i = 0; i < w; i++)
-        pset(x + pad + i, y + pad, (core & 0xFEFEFE) | 0x101010);
+        gfx2d_plot(&surface, x + pad + i, y + pad, light_edge);
     for (int j = 0; j < h; j++)
-        pset(x + pad, y + pad + j, (core & 0xFEFEFE) | 0x101010);
+        gfx2d_plot(&surface, x + pad, y + pad + j, light_edge);
     for (int i = 0; i < w; i++)
-        pset(x + pad + i, y + pad + h - 1, shade);
+        gfx2d_plot(&surface, x + pad + i, y + pad + h - 1, shade);
     for (int j = 0; j < h; j++)
-        pset(x + pad + w - 1, y + pad + j, shade);
+        gfx2d_plot(&surface, x + pad + w - 1, y + pad + j, shade);
 
     if (is_head)
-        frame_rect(x + pad, y + pad, w, h, light);
+        gfx2d_stroke_rect(&surface, x + pad, y + pad, w, h, light);
 }
 
 static void load_hiscore(void) {
@@ -126,8 +95,8 @@ static void put_str_clipped(int col, int row, const char* s, unsigned char attr)
         sys_put_at(col + i, row, s[i], attr);
 }
 static void hud_draw_panel_and_text(void) {
-    fill_rect(0, 0, G_W, HUD_PX, RGB(18, 20, 24));
-    frame_rect(0, 0, G_W, HUD_PX, RGB(60, 60, 60));
+    gfx2d_fill_rect(&surface, 0, 0, G_W, HUD_PX, RGB(18, 20, 24));
+    gfx2d_stroke_rect(&surface, 0, 0, G_W, HUD_PX, RGB(60, 60, 60));
 
     int cols = 80, rows = 25;
     sys_getsize(&cols, &rows);
@@ -255,22 +224,22 @@ static int step(void) {
 }
 
 static void draw_everything(void) {
-    fill_rect(0, 0, G_W, G_H, RGB(12, 14, 18));
+    gfx2d_fill_rect(&surface, 0, 0, G_W, G_H, RGB(12, 14, 18));
 
-    frame_rect(FX0 - 2, FY0 - 2, COLS * CELL + 4, ROWS * CELL + 4, RGB(220, 220, 220));
-    frame_rect(FX0 - 1, FY0 - 1, COLS * CELL + 2, ROWS * CELL + 2, RGB(80, 80, 80));
+    gfx2d_stroke_rect(&surface, FX0 - 2, FY0 - 2, COLS * CELL + 4, ROWS * CELL + 4, RGB(220, 220, 220));
+    gfx2d_stroke_rect(&surface, FX0 - 1, FY0 - 1, COLS * CELL + 2, ROWS * CELL + 2, RGB(80, 80, 80));
 
     if (CELL >= 16) {
         unsigned int gridCol = RGB(28, 32, 38);
         for (int c = 1; c < COLS; ++c) {
             int x = FX0 + c * CELL;
             for (int y = FY0; y < FY0 + ROWS * CELL; ++y)
-                pset(x, y, gridCol);
+                gfx2d_plot(&surface, x, y, gridCol);
         }
         for (int r = 1; r < ROWS; ++r) {
             int y = FY0 + r * CELL;
             for (int x = FX0; x < FX0 + COLS * CELL; ++x)
-                pset(x, y, gridCol);
+                gfx2d_plot(&surface, x, y, gridCol);
         }
     }
 
@@ -284,7 +253,7 @@ static void draw_everything(void) {
 
     hud_draw_panel_and_text();
 
-    sys_gfx_blit(backbuf);
+    gfx2d_surface_present(&surface, sys_gfx_blit);
 }
 
 void main(void) {
@@ -309,6 +278,7 @@ void main(void) {
     }
     G_W = W;
     G_H = H;
+    gfx2d_surface_init(&surface, G_W, G_H, backbuf);
 
     sys_mouse_show(0);
     sys_gfx_clear(RGB(0, 0, 0));
@@ -358,13 +328,13 @@ void main(void) {
             step_ticks = target;
 
             if (!step()) {
-                fill_rect(0, 0, G_W, G_H, RGB(10, 10, 10));
+                gfx2d_fill_rect(&surface, 0, 0, G_W, G_H, RGB(10, 10, 10));
                 hud_draw_panel_and_text();
 
                 int bw = (G_W * 3) / 5, bh = (G_H * 2) / 5;
                 int bx = (G_W - bw) / 2, by = (G_H - bh) / 2;
-                fill_rect(bx, by, bw, bh, RGB(24, 26, 30));
-                frame_rect(bx, by, bw, bh, RGB(220, 220, 220));
+                gfx2d_fill_rect(&surface, bx, by, bw, bh, RGB(24, 26, 30));
+                gfx2d_stroke_rect(&surface, bx, by, bw, bh, RGB(220, 220, 220));
 
                 char line1[] = "GAME OVER!  Press ENTER to exit...";
                 char buf1[64], buf2[64], ns[16], nh[16];
@@ -391,7 +361,7 @@ void main(void) {
                 put_str_clipped(cx2, 5, buf1, 0x0F);
                 put_str_clipped(cx3, 6, buf2, 0x0F);
 
-                sys_gfx_blit(backbuf);
+                gfx2d_surface_present(&surface, sys_gfx_blit);
 
                 while (sys_getchar() != '\n') {
                 }
