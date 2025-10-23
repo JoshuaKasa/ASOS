@@ -5,6 +5,23 @@
 #define W 80
 #define H 25
 
+// Layout
+#define ICON_W 9
+#define ICON_H 4
+#define ICON_MARGIN_LEFT 2
+#define ICON_MARGIN_RIGHT 2
+#define ICON_MARGIN_TOP 3
+#define ICON_MARGIN_BOTTOM 2
+
+#define MAX_ITEMS 64
+#define NAME_MAX 32
+
+#define TARGET_NONE   -1
+#define TARGET_REFRESH -2
+#define TARGET_QUIT    -3
+#define TARGET_PREV    -4
+#define TARGET_NEXT    -5
+
 // VGA colors
 #define C_BLACK 0x0
 #define C_BLUE 0x1
@@ -23,275 +40,534 @@
 static inline int clamp(int v, int lo, int hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
+
 static void put(int x, int y, char ch, unsigned char a) {
+    if (x < 0 || x >= W || y < 0 || y >= H)
+        return;
     sys_put_at(x, y, ch, a);
 }
+
 static void text(int x, int y, const char* s, unsigned char a) {
     for (int i = 0; s[i]; ++i)
         put(x + i, y, s[i], a);
 }
 
-static void hline(int x, int y, int w, unsigned char a) {
-    for (int i = 0; i < w; i++)
-        put(x + i, y, (i % 2) ? 205 : 196, a);
-}
-static void vline(int x, int y, int h, unsigned char a) {
-    for (int j = 0; j < h; j++)
-        put(x, y + j, (j % 2) ? 186 : 179, a);
+static void fill_rect(int x, int y, int w, int h, unsigned char a) {
+    for (int j = 0; j < h; ++j)
+        for (int i = 0; i < w; ++i)
+            put(x + i, y + j, ' ', a);
 }
 
-// Window with chunky corners
-static void window(int x, int y, int w, int h, const char* title, unsigned char frame, unsigned char title_attr, unsigned char fill) {
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            put(x + i, y + j, ' ', fill);
-    put(x, y, 218, frame);
-    put(x + w - 1, y, 191, frame);
-    put(x, y + h - 1, 192, frame);
-    put(x + w - 1, y + h - 1, 217, frame);
-    hline(x + 1, y, w - 2, frame);
-    hline(x + 1, y + h - 1, w - 2, frame);
-    vline(x, y + 1, h - 2, frame);
-    vline(x + w - 1, y + 1, h - 2, frame);
-    if (title) {
-        int len = (int)strlen(title);
-        if (len > w - 4)
-            len = w - 4;
-        int tx = x + (w - len) / 2;
-        text(tx, y, title, title_attr);
-    }
-}
-
-// Status bar bottom
-static void status(const char* s) {
-    for (int i = 0; i < W; i++)
-        put(i, H - 1, ' ', ATTR(C_BLACK, C_BLUE));
-    text(1, H - 1, s, ATTR(C_YELLOW, C_BLUE));
-}
-
-// Apps grid
 typedef struct {
-    const char* label;
-    const char* bin;
-} App;
-static const App apps[] = {
-    {"Terminal", "terminal.bin"}, {"TextEdit", "textedit.bin"}, {"Snake", "snake.bin"}, {"Pong", "pong.bin"}, {"Calc", "calculator.bin"},
-};
-static const int APP_N = (int)(sizeof(apps) / sizeof(apps[0]));
+    char name[NAME_MAX];
+    char label[NAME_MAX];
+    int is_bin;
+    int x;
+    int y;
+} DesktopItem;
 
-static void draw_icon_tile(int rx, int ry, const char* label, int focused) {
-    // 9x5 tile
-    unsigned char bg = focused ? ATTR(C_BLACK, C_LIGHTBLUE) : ATTR(C_WHITE, C_BLUE);
-    unsigned char fr = focused ? ATTR(C_YELLOW, C_BLACK) : ATTR(C_LIGHTGRAY, C_BLACK);
-    for (int j = 0; j < 5; j++)
-        for (int i = 0; i < 9; i++)
-            put(rx + i, ry + j, ' ', bg);
-    // fake tiny icon
-    put(rx + 2, ry + 1, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    put(rx + 3, ry + 1, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    put(rx + 2, ry + 2, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    put(rx + 3, ry + 2, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    // label centered under
-    int lw = (int)strlen(label);
-    if (lw > 9)
-        lw = 9;
-    int lx = rx + (9 - lw) / 2;
-    text(lx, ry + 4, label, fr);
-}
+static DesktopItem items[MAX_ITEMS];
+static int item_count = 0;
+static int icon_cols = 1;
+static int icon_rows = 1;
+static int items_per_page = 1;
+static int total_pages = 1;
+static int current_page = 0;
 
-static void draw_apps(int sel) {
-    int x0 = 2, y0 = 3;
-    window(x0 - 2, y0 - 2, 9 * 4 + 6, 8, " Applications ", ATTR(C_LIGHTGRAY, C_BLACK), ATTR(C_YELLOW, C_BLACK), ATTR(C_BLACK, C_BLACK));
-    int col = 0, row = 0;
-    for (int i = 0; i < APP_N; i++) {
-        int rx = x0 + col * 9 + col * 3;
-        int ry = y0 + row * 6;
-        draw_icon_tile(rx, ry, apps[i].label, i == sel);
-        if (++col == 4) {
-            col = 0;
-            row++;
-        }
-    }
-}
+static int prev_x0 = -1, prev_x1 = -1;
+static int refresh_x0 = -1, refresh_x1 = -1;
+static int next_x0 = -1, next_x1 = -1;
+static int quit_x0 = -1, quit_x1 = -1;
+static const int BUTTON_Y = H - 2;
 
-// Files list
-#define MAX_FILES 32
-#define NAME_MAX 24  // show up to 23 chars + 0
-static char file_names[MAX_FILES][NAME_MAX];
-static int file_count = 0;
+static const char default_status[] = "Left click icons to launch apps or open files. Right click to refresh.";
 
-static int ends_with_txt(const char* s) {
-    int n = (int)strlen(s);
-    if (n < 4)
+static int ends_with(const char* s, const char* ext) {
+    int ns = (int)strlen(s);
+    int ne = (int)strlen(ext);
+    if (ne > ns)
         return 0;
-    const char* e = s + n - 4;
-    return (e[0] == '.' || e[0] == '.') && ((e[1] == 't' || e[1] == 'T') && (e[2] == 'x' || e[2] == 'X') && (e[3] == 't' || e[3] == 'T'));
+    const char* tail = s + ns - ne;
+    for (int i = 0; i < ne; ++i) {
+        char a = tail[i];
+        char b = ext[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b)
+            return 0;
+    }
+    return 1;
 }
 
-static void load_files(void) {
-    // pull all files from FS and keep the .txt ones (case-insensitive)
-    char raw[MAX_FILES * NAME_MAX];
-    int rc = sys_enumfiles(raw, MAX_FILES, NAME_MAX);
-    file_count = 0;
-    if (rc > 0) {
-        for (int i = 0; i < rc; i++) {
-            char* name = raw + i * NAME_MAX;
-            if (ends_with_txt(name)) {
-                // store for UI
-                int L = (int)strlen(name);
-                if (L >= NAME_MAX)
-                    L = NAME_MAX - 1;
-                for (int k = 0; k < L; k++)
-                    file_names[file_count][k] = name[k];
-                file_names[file_count][L] = 0;
-                file_count++;
-                if (file_count >= MAX_FILES)
-                    break;
-            }
+static void make_label(const char* name, char* out) {
+    int len = 0;
+    while (name[len] && len < NAME_MAX - 1) {
+        out[len] = name[len];
+        len++;
+    }
+    out[len] = 0;
+    for (int i = len - 1; i >= 0; --i) {
+        if (out[i] == '.') {
+            out[i] = 0;
+            break;
         }
+    }
+    if (out[0] == 0) {
+        len = 0;
+        while (name[len] && len < NAME_MAX - 1) {
+            out[len] = name[len];
+            len++;
+        }
+        out[len] = 0;
     }
 }
 
-static void draw_files(int sel) {
-    int x = 2, y = 12, w = 76, h = 10;
-    window(x, y, w, h, " Files (.txt) ", ATTR(C_LIGHTGRAY, C_BLACK), ATTR(C_YELLOW, C_BLACK), ATTR(C_BLACK, C_BLACK));
-    int list_y = y + 2;
-    int per_page = h - 3;
-    int page = (sel / per_page) * per_page;
-    for (int i = 0; i < per_page; i++) {
-        int idx = page + i;
-        // blank line
-        for (int X = 0; X < w - 4; X++)
-            put(x + 2 + X, list_y + i, ' ', ATTR(C_WHITE, C_BLACK));
-        if (idx < file_count) {
-            unsigned char a = (idx == sel) ? ATTR(C_BLACK, C_YELLOW) : ATTR(C_LIGHTGRAY, C_BLACK);
-            const char* nm = file_names[idx];
-            text(x + 3, list_y + i, nm, a);
-        }
+static void add_item(const char* name, int is_bin) {
+    if (item_count >= MAX_ITEMS || !name[0])
+        return;
+    DesktopItem* it = &items[item_count++];
+    int len = 0;
+    while (name[len] && len < NAME_MAX - 1) {
+        it->name[len] = name[len];
+        len++;
+    }
+    it->name[len] = 0;
+    make_label(name, it->label);
+    it->is_bin = is_bin;
+    it->x = -1;
+    it->y = -1;
+}
+
+static void load_items(void) {
+    char raw[MAX_ITEMS * NAME_MAX];
+    int count = sys_enumfiles(raw, MAX_ITEMS, NAME_MAX);
+    item_count = 0;
+    if (count <= 0)
+        return;
+
+    for (int i = 0; i < count; ++i) {
+        const char* name = raw + i * NAME_MAX;
+        if (ends_with(name, ".bin"))
+            add_item(name, 1);
+    }
+    for (int i = 0; i < count; ++i) {
+        const char* name = raw + i * NAME_MAX;
+        if (!ends_with(name, ".bin"))
+            add_item(name, 0);
     }
 }
 
-// ---------- Main ----------
+static void layout_items(void) {
+    int usable_w = W - ICON_MARGIN_LEFT - ICON_MARGIN_RIGHT;
+    int usable_h = H - ICON_MARGIN_TOP - ICON_MARGIN_BOTTOM;
+    int max_cols = usable_w / ICON_W;
+    if (max_cols < 1) max_cols = 1;
+    int max_rows = usable_h / ICON_H;
+    if (max_rows < 1) max_rows = 1;
+
+    icon_cols = max_cols;
+    icon_rows = max_rows;
+    items_per_page = icon_cols * icon_rows;
+    if (items_per_page < 1) items_per_page = 1;
+
+    if (item_count <= 0) {
+        total_pages = 1;
+        current_page = 0;
+        return;
+    }
+
+    total_pages = (item_count + items_per_page - 1) / items_per_page;
+    if (total_pages < 1)
+        total_pages = 1;
+    if (current_page >= total_pages)
+        current_page = total_pages - 1;
+    if (current_page < 0)
+        current_page = 0;
+
+    for (int i = 0; i < item_count; ++i) {
+        items[i].x = -1;
+        items[i].y = -1;
+    }
+
+    int start = current_page * items_per_page;
+    int end = start + items_per_page;
+    if (end > item_count)
+        end = item_count;
+
+    for (int i = start; i < end; ++i) {
+        int local = i - start;
+        int col = local % icon_cols;
+        int row = local / icon_cols;
+        items[i].x = ICON_MARGIN_LEFT + col * ICON_W;
+        items[i].y = ICON_MARGIN_TOP + row * ICON_H;
+    }
+}
+
+static void clear_icon_area(void) {
+    int area_h = H - ICON_MARGIN_TOP - ICON_MARGIN_BOTTOM;
+    if (area_h < 0)
+        area_h = 0;
+    fill_rect(0, ICON_MARGIN_TOP, W, area_h, ATTR(C_WHITE, C_BLUE));
+}
+
+static void draw_header(void) {
+    fill_rect(0, 0, W, 2, ATTR(C_LIGHTGRAY, C_BLACK));
+    text(2, 0, "ASOS Desktop", ATTR(C_YELLOW, C_BLACK));
+    text(2, 1, "Click icons to launch apps or open files. Use the controls below or press Q to quit.", ATTR(C_LIGHTGRAY, C_BLACK));
+}
+
+static void draw_background(void) {
+    fill_rect(0, 0, W, H, ATTR(C_WHITE, C_BLUE));
+    draw_header();
+    clear_icon_area();
+}
+
+static void draw_button_label_at(int id, const char* label, int* cursor_x, int hovered_button, int pressed_button, int* out_x0, int* out_x1) {
+    int x = *cursor_x;
+    int len = (int)strlen(label);
+    if (out_x0) *out_x0 = x;
+    if (out_x1) *out_x1 = x + len;
+    unsigned char bg = (pressed_button == id) ? ATTR(C_YELLOW, C_LIGHTBLUE) : (hovered_button == id ? ATTR(C_YELLOW, C_CYAN) : ATTR(C_WHITE, C_BLUE));
+    for (int i = 0; i < len; ++i)
+        put(x + i, BUTTON_Y, label[i], bg);
+    *cursor_x = x + len + 1;
+}
+
+static void draw_controls(int hovered_button, int pressed_button) {
+    fill_rect(0, BUTTON_Y, W, 1, ATTR(C_WHITE, C_BLUE));
+
+    prev_x0 = prev_x1 = -1;
+    refresh_x0 = refresh_x1 = -1;
+    next_x0 = next_x1 = -1;
+    quit_x0 = quit_x1 = -1;
+
+    int x = 2;
+    if (total_pages > 1) {
+        draw_button_label_at(TARGET_PREV, "[ Prev ]", &x, hovered_button, pressed_button, &prev_x0, &prev_x1);
+    }
+    draw_button_label_at(TARGET_REFRESH, "[ Refresh ]", &x, hovered_button, pressed_button, &refresh_x0, &refresh_x1);
+    if (total_pages > 1) {
+        draw_button_label_at(TARGET_NEXT, "[ Next ]", &x, hovered_button, pressed_button, &next_x0, &next_x1);
+    }
+
+    char page_buf[24];
+    char tmp[12];
+    page_buf[0] = 0;
+    strcpy(page_buf, "Page ");
+    itoa(total_pages ? current_page + 1 : 1, tmp, 10);
+    strcat(page_buf, tmp);
+    strcat(page_buf, "/");
+    itoa(total_pages ? total_pages : 1, tmp, 10);
+    strcat(page_buf, tmp);
+    text(x, BUTTON_Y, page_buf, ATTR(C_LIGHTGRAY, C_BLUE));
+
+    const char* quit_label = "[ Quit ]";
+    int len = (int)strlen(quit_label);
+    int qx = W - len - 2;
+    if (qx <= x)
+        qx = x + 1;
+    quit_x0 = qx;
+    quit_x1 = qx + len;
+    unsigned char q_attr = (pressed_button == TARGET_QUIT) ? ATTR(C_YELLOW, C_LIGHTBLUE) : (hovered_button == TARGET_QUIT ? ATTR(C_YELLOW, C_CYAN) : ATTR(C_WHITE, C_BLUE));
+    for (int i = 0; i < len; ++i)
+        put(qx + i, BUTTON_Y, quit_label[i], q_attr);
+}
+
+static void draw_item(const DesktopItem* it, int highlighted, int pressed) {
+    if (it->x < 0 || it->y < 0)
+        return;
+    unsigned char bg_color = pressed ? C_LIGHTBLUE : (highlighted ? C_CYAN : C_BLUE);
+    unsigned char fill_attr = ATTR(C_WHITE, bg_color);
+    for (int j = 0; j < ICON_H; ++j)
+        for (int i = 0; i < ICON_W; ++i)
+            put(it->x + i, it->y + j, ' ', fill_attr);
+
+    unsigned char border_attr = ATTR(C_BLACK, bg_color);
+    unsigned char symbol_attr = ATTR(it->is_bin ? C_YELLOW : C_WHITE, bg_color);
+    int cx = it->x + (ICON_W - 3) / 2;
+    put(cx + 0, it->y + 0, 218, border_attr);
+    put(cx + 1, it->y + 0, 196, border_attr);
+    put(cx + 2, it->y + 0, 191, border_attr);
+    put(cx + 0, it->y + 1, 179, border_attr);
+    put(cx + 1, it->y + 1, it->is_bin ? '*' : 'F', symbol_attr);
+    put(cx + 2, it->y + 1, 179, border_attr);
+    put(cx + 0, it->y + 2, 192, border_attr);
+    put(cx + 1, it->y + 2, 196, border_attr);
+    put(cx + 2, it->y + 2, 217, border_attr);
+
+    unsigned char label_attr = ATTR(highlighted ? C_YELLOW : C_LIGHTGRAY, bg_color);
+    for (int i = 0; i < ICON_W; ++i)
+        put(it->x + i, it->y + ICON_H - 1, ' ', label_attr);
+    int len = (int)strlen(it->label);
+    if (len > ICON_W - 1)
+        len = ICON_W - 1;
+    int start = it->x + (ICON_W - len) / 2;
+    for (int i = 0; i < len; ++i)
+        put(start + i, it->y + ICON_H - 1, it->label[i], label_attr);
+}
+
+static void draw_items(int hovered_item, int pressed_item) {
+    for (int i = 0; i < item_count; ++i) {
+        draw_item(&items[i], i == hovered_item, i == pressed_item);
+    }
+}
+
+static void status(const char* s) {
+    unsigned char base = ATTR(C_WHITE, C_BLUE);
+    for (int i = 0; i < W; ++i)
+        put(i, H - 1, ' ', base);
+    if (!s)
+        return;
+    int len = (int)strlen(s);
+    if (len > W - 2)
+        len = W - 2;
+    for (int i = 0; i < len; ++i)
+        put(1 + i, H - 1, s[i], ATTR(C_YELLOW, C_BLUE));
+}
+
+static void update_status_for_target(int target) {
+    char msg[96];
+    msg[0] = 0;
+    if (target >= 0 && target < item_count && items[target].x >= 0) {
+        if (items[target].is_bin) {
+            strcpy(msg, "Launch ");
+            strcat(msg, items[target].name);
+        } else {
+            strcpy(msg, "Open ");
+            strcat(msg, items[target].name);
+            strcat(msg, " in TextEdit");
+        }
+        status(msg);
+    } else if (target == TARGET_REFRESH) {
+        status("Reload the file list");
+    } else if (target == TARGET_PREV) {
+        status("Previous page");
+    } else if (target == TARGET_NEXT) {
+        status("Next page");
+    } else if (target == TARGET_QUIT) {
+        status("Exit to the shell");
+    } else {
+        status(default_status);
+    }
+}
+
+static int hit_test(int cell_x, int cell_y) {
+    if (cell_y == BUTTON_Y) {
+        if (prev_x0 >= 0 && cell_x >= prev_x0 && cell_x < prev_x1) return TARGET_PREV;
+        if (refresh_x0 >= 0 && cell_x >= refresh_x0 && cell_x < refresh_x1) return TARGET_REFRESH;
+        if (next_x0 >= 0 && cell_x >= next_x0 && cell_x < next_x1) return TARGET_NEXT;
+        if (quit_x0 >= 0 && cell_x >= quit_x0 && cell_x < quit_x1) return TARGET_QUIT;
+    }
+    for (int i = 0; i < item_count; ++i) {
+        if (items[i].x < 0 || items[i].y < 0)
+            continue;
+        if (cell_x >= items[i].x && cell_x < items[i].x + ICON_W &&
+            cell_y >= items[i].y && cell_y < items[i].y + ICON_H)
+            return i;
+    }
+    return TARGET_NONE;
+}
+
+static void rebuild_desktop(int* hovered_item, int* hovered_button, int* pressed_item, int* pressed_button, const char* message) {
+    load_items();
+    layout_items();
+    draw_background();
+    draw_controls(TARGET_NONE, TARGET_NONE);
+    clear_icon_area();
+    draw_items(-1, -1);
+    status(message ? message : default_status);
+    *hovered_item = -1;
+    *hovered_button = TARGET_NONE;
+    *pressed_item = -1;
+    *pressed_button = TARGET_NONE;
+}
+
+static void change_page(int delta, int* hovered_item, int* hovered_button, int* pressed_item, int* pressed_button) {
+    if (total_pages <= 1)
+        return;
+    int new_page = current_page + delta;
+    if (new_page < 0)
+        new_page = 0;
+    if (new_page >= total_pages)
+        new_page = total_pages - 1;
+    if (new_page == current_page)
+        return;
+    current_page = new_page;
+    layout_items();
+    clear_icon_area();
+    draw_items(-1, -1);
+    draw_controls(TARGET_NONE, TARGET_NONE);
+    status(default_status);
+    *hovered_item = -1;
+    *hovered_button = TARGET_NONE;
+    *pressed_item = -1;
+    *pressed_button = TARGET_NONE;
+}
+
+static void handle_refresh(int* hovered_item, int* hovered_button, int* pressed_item, int* pressed_button) {
+    rebuild_desktop(hovered_item, hovered_button, pressed_item, pressed_button, "Refreshed file list.");
+}
+
+static void handle_quit(void) {
+    status("Leaving desktop...");
+    sys_mouse_show(0);
+    sys_exit();
+}
+
+static void launch_item(int idx, int* hovered_item, int* hovered_button, int* pressed_item, int* pressed_button) {
+    if (idx < 0 || idx >= item_count)
+        return;
+    char name[NAME_MAX];
+    for (int i = 0; i < NAME_MAX; ++i) {
+        name[i] = items[idx].name[i];
+        if (!items[idx].name[i])
+            break;
+    }
+    name[NAME_MAX - 1] = 0;
+
+    char status_msg[96];
+    status_msg[0] = 0;
+    if (items[idx].is_bin) {
+        strcpy(status_msg, "Launching ");
+        strcat(status_msg, name);
+        strcat(status_msg, "...");
+        status(status_msg);
+        sys_mouse_show(0);
+        sys_exec(name);
+        sys_mouse_show(1);
+        rebuild_desktop(hovered_item, hovered_button, pressed_item, pressed_button, "Back from app.");
+    } else {
+        strcpy(status_msg, "Opening ");
+        strcat(status_msg, name);
+        strcat(status_msg, "...");
+        status(status_msg);
+        char cmd[NAME_MAX + 16];
+        strcpy(cmd, "textedit.bin ");
+        strcat(cmd, name);
+        sys_mouse_show(0);
+        sys_exec(cmd);
+        sys_mouse_show(1);
+        rebuild_desktop(hovered_item, hovered_button, pressed_item, pressed_button, "Back from file.");
+    }
+}
+
+static void handle_button(int target, int* hovered_item, int* hovered_button, int* pressed_item, int* pressed_button) {
+    if (target == TARGET_REFRESH) {
+        handle_refresh(hovered_item, hovered_button, pressed_item, pressed_button);
+    } else if (target == TARGET_PREV) {
+        change_page(-1, hovered_item, hovered_button, pressed_item, pressed_button);
+    } else if (target == TARGET_NEXT) {
+        change_page(1, hovered_item, hovered_button, pressed_item, pressed_button);
+    } else if (target == TARGET_QUIT) {
+        handle_quit();
+    }
+}
+
 void main(void) {
     sys_clear();
-    sys_mouse_show(0);  // hide cursor sprite just in case
-    int cols = 80, rows = 25;
-    sys_getsize(&cols, &rows);
+    sys_mouse_show(1);
 
-    // Layout fits 80x25. If different, still draw within bounds.
-    (void)cols;
-    (void)rows;
+    load_items();
+    layout_items();
+    draw_background();
+    draw_controls(TARGET_NONE, TARGET_NONE);
+    draw_items(-1, -1);
+    status(default_status);
 
-    // load .txt files for the right pane
-    load_files();
-
-    // selection state
-    int focus = 0;  // 0 = apps, 1 = files
-    int sel_app = 0;
-    int sel_file = 0;
-
-    // draw chrome
-    for (int y = 0; y < H - 1; y++)
-        for (int x = 0; x < W; x++)
-            put(x, y, ' ', ATTR(C_WHITE, C_BLACK));
-    text(2, 1, "ASOS Desktop", ATTR(C_YELLOW, C_BLACK));
-    text(20, 1, "[Arrows] Move   [TAB] Switch   [ENTER] Open   [Q] Quit", ATTR(C_LIGHTGRAY, C_BLACK));
-    draw_apps(sel_app);
-    draw_files(sel_file);
-    status("Welcome. Pick an app or a .txt file.");
+    mouse_info_t mi;
+    unsigned prev_buttons = 0;
+    int hovered_item = -1;
+    int pressed_item = -1;
+    int hovered_button = TARGET_NONE;
+    int pressed_button = TARGET_NONE;
 
     sys_setcursor(W - 1, H - 1);
 
-    unsigned int refresh = sys_getticks() + 8;
-
     while (1) {
-        unsigned int ch = sys_trygetchar();
-        if (ch) {
-            char c = (char)ch;
+        unsigned int key = sys_trygetchar();
+        if (key) {
+            char c = (char)key;
             if (c == 'q' || c == 'Q') {
-                sys_write("\nBye!\n");
-                sys_exit();
+                handle_quit();
+            } else if (c == 'r' || c == 'R') {
+                handle_refresh(&hovered_item, &hovered_button, &pressed_item, &pressed_button);
+            }
+        }
+
+        sys_mouse_get(&mi);
+        int cell_x = clamp(mi.x / 8, 0, W - 1);
+        int cell_y = clamp(mi.y / 16, 0, H - 1);
+
+        int target = hit_test(cell_x, cell_y);
+        int new_hovered_item = (target >= 0) ? target : -1;
+        int new_hovered_button = (target < 0) ? target : TARGET_NONE;
+        if (target == TARGET_NONE)
+            new_hovered_button = TARGET_NONE;
+
+        int redraw_items = 0;
+        int redraw_buttons = 0;
+
+        if (new_hovered_item != hovered_item || new_hovered_button != hovered_button) {
+            hovered_item = new_hovered_item;
+            hovered_button = new_hovered_button;
+            redraw_items = 1;
+            redraw_buttons = 1;
+            update_status_for_target(target);
+        }
+
+        unsigned buttons = mi.buttons;
+        int left_down = (buttons & 1) != 0;
+        int left_prev = (prev_buttons & 1) != 0;
+
+        if (left_down && !left_prev) {
+            if (hovered_item >= 0) {
+                pressed_item = hovered_item;
+                pressed_button = TARGET_NONE;
+                redraw_items = 1;
+            } else if (hovered_button != TARGET_NONE) {
+                pressed_item = -1;
+                pressed_button = hovered_button;
+                redraw_buttons = 1;
+            } else {
+                pressed_item = -1;
+                pressed_button = TARGET_NONE;
+            }
+        } else if (!left_down && left_prev) {
+            int activated = TARGET_NONE;
+            if (pressed_item >= 0 && hovered_item == pressed_item)
+                activated = pressed_item;
+            else if (pressed_button != TARGET_NONE && hovered_button == pressed_button)
+                activated = pressed_button;
+
+            if (pressed_item >= 0) {
+                pressed_item = -1;
+                redraw_items = 1;
+            }
+            if (pressed_button != TARGET_NONE) {
+                pressed_button = TARGET_NONE;
+                redraw_buttons = 1;
             }
 
-            if (c == '\t') {  // switch pane
-                focus = 1 - focus;
-                // repaint focus highlight
-                draw_apps(sel_app);
-                draw_files(sel_file);
-            } else if ((unsigned char)c == KEY_LEFT) {
-                if (focus == 0) {
-                    if (sel_app > 0)
-                        sel_app--;
-                    draw_apps(sel_app);
-                } else { /* files pane doesn't use LEFT */
-                }
-            } else if ((unsigned char)c == KEY_RIGHT) {
-                if (focus == 0) {
-                    if (sel_app < APP_N - 1)
-                        sel_app++;
-                    draw_apps(sel_app);
-                }
-            } else if ((unsigned char)c == KEY_UP) {
-                if (focus == 0) {
-                    if (sel_app >= 4)
-                        sel_app -= 4;
-                    draw_apps(sel_app);
+            if (activated != TARGET_NONE) {
+                if (activated >= 0) {
+                    launch_item(activated, &hovered_item, &hovered_button, &pressed_item, &pressed_button);
                 } else {
-                    if (sel_file > 0)
-                        sel_file--;
-                    draw_files(sel_file);
-                }
-            } else if ((unsigned char)c == KEY_DOWN) {
-                if (focus == 0) {
-                    if (sel_app + 4 < APP_N)
-                        sel_app += 4;
-                    draw_apps(sel_app);
-                } else {
-                    if (sel_file + 1 < file_count)
-                        sel_file++;
-                    draw_files(sel_file);
-                }
-            } else if (c == '\n') {
-                if (focus == 0) {
-                    // launch selected app
-                    sys_write("Launching ");
-                    sys_write(apps[sel_app].label);
-                    sys_write("...\n");
-                    sys_exec(apps[sel_app].bin);
-                    // if back from app, re-draw UI
-                    sys_clear();
-                    load_files();
-                    draw_apps(sel_app);
-                    draw_files(sel_file);
-                    status("Back from app.");
-                } else {
-                    if (file_count > 0) {
-                        // open textedit on file
-                        char cmd[64];
-                        strcpy(cmd, "textedit.bin ");
-                        strcat(cmd, file_names[sel_file]);
-                        sys_write("Editing ");
-                        sys_write(file_names[sel_file]);
-                        sys_write("...\n");
-                        sys_exec(cmd);
-                        // return -> redraw (file list may have changed size if saved)
-                        sys_clear();
-                        load_files();
-                        draw_apps(sel_app);
-                        if (sel_file >= file_count && file_count > 0)
-                            sel_file = file_count - 1;
-                        draw_files(sel_file);
-                        status("Back from editor.");
-                    }
+                    handle_button(activated, &hovered_item, &hovered_button, &pressed_item, &pressed_button);
                 }
             }
         }
 
-        unsigned now = sys_getticks();
-        if ((int)(now - refresh) >= 0) {
-            sys_setcursor(W - 1, H - 1);
-            refresh += 8;
+        if ((buttons & 2) && !(prev_buttons & 2)) {
+            handle_refresh(&hovered_item, &hovered_button, &pressed_item, &pressed_button);
         }
+
+        if (redraw_items)
+            draw_items(hovered_item, pressed_item);
+        if (redraw_buttons)
+            draw_controls(hovered_button, pressed_button);
+
+        sys_setcursor(W - 1, H - 1);
+        prev_buttons = buttons;
         asm volatile("hlt");
     }
 }
