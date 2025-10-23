@@ -7,6 +7,7 @@
 #include "gfx.h"
 #include "../lib/string.h"
 #include "../lib/stdlib.h"
+#include "theme.h"
 #include <stdint.h>
 
 static char last_exec_arg[32];
@@ -329,13 +330,8 @@ static uint32_t sys_gfx_blit_impl(uint32_t a, uint32_t ebx, uint32_t c, uint32_t
         uint32_t* dst = (uint32_t*)(fb + (size_t)y * pitch);
         const uint32_t* srow = src + (size_t)y * w;
 
-        for (int x = 0; x < w; x++) {
-            uint32_t rgb = srow[x];
-            uint32_t bgr = ((rgb & 0x000000FF) << 16)
-                         |  (rgb & 0x0000FF00)
-                         | ((rgb & 0x00FF0000) >> 16);
-            dst[x] = bgr;
-        }
+        for (int x = 0; x < w; x++)
+            dst[x] = srow[x];
 
         // After finishing a full 16-px text row, overlay its glyphs immediately
         if ((y % CON_CHAR_H) == (CON_CHAR_H - 1))
@@ -343,6 +339,18 @@ static uint32_t sys_gfx_blit_impl(uint32_t a, uint32_t ebx, uint32_t c, uint32_t
     }
 
     return (uint32_t)(w * h);
+}
+
+static uint32_t sys_theme_set_impl(uint32_t a, uint32_t ebx, uint32_t c, uint32_t d) {
+    (void)a; (void)c; (void)d;
+
+    return (uint32_t)theme_set((ui_theme_id_t)ebx);
+}
+
+static uint32_t sys_theme_get_impl(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+    (void)a; (void)b; (void)c; (void)d;
+
+    return (uint32_t)theme_current_id();
 }
 
 // Dispatch table
@@ -380,6 +388,8 @@ static const sysfn_t sys_table[] = {
     [SYSCALL_GFX_CLEAR]   = sys_gfx_clear_impl,
     [SYSCALL_GFX_PUTPX]   = sys_gfx_putpx_impl,
     [SYSCALL_GFX_BLIT]    = sys_gfx_blit_impl,
+    [SYSCALL_THEME_SET]   = sys_theme_set_impl,
+    [SYSCALL_THEME_GET]   = sys_theme_get_impl,
 };
 
 uint32_t syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx) {
