@@ -54,25 +54,15 @@ int gfx_init(void) {
 
 static inline void put32(int x, int y, uint32_t rgb)
 {
-    // rgb = 0x00RRGGBB -> mem = 0x00BBGGRR (BGRX in little-endian)
-    uint32_t bgr =
-        ((rgb & 0x000000FF) << 16) |   // B -> pos R
-        ( rgb & 0x0000FF00)        |   // G -> pos G
-        ((rgb & 0x00FF0000) >> 16);    // R -> pos B
-
-    *(uint32_t*)(LFB + (size_t)y * G.pitch + (size_t)x * 4) = bgr;
+    *(uint32_t*)(LFB + (size_t)y * G.pitch + (size_t)x * 4) = rgb;
 }
 
 void gfx_clear(uint32_t rgba) {
-    uint32_t bgr = ((rgba & 0x000000FF) << 16)
-                 |  (rgba & 0x0000FF00)
-                 | ((rgba & 0x00FF0000) >> 16);
-
     for (int y = 0; y < G.h; y++) {
         uint32_t* row = (uint32_t*)(LFB + (size_t)y * G.pitch);
 
         for (int x = 0; x < G.w; x++)
-            row[x] = bgr;
+            row[x] = rgba;
     }
 }
 
@@ -128,13 +118,7 @@ uint32_t gfx_get_pixel(int x, int y) {
     if ((unsigned)x >= G.w || (unsigned)y >= G.h)
         return 0;
 
-    uint32_t bgr = *(uint32_t*)(LFB + (size_t)y * G.pitch + (size_t)x * 4);
-
-    // memory: 0x00BBGGRR -> returns: 0x00RRGGBB
-    uint32_t rr = (bgr & 0x000000FF) << 16;
-    uint32_t gg = (bgr & 0x0000FF00);
-    uint32_t bb = (bgr & 0x00FF0000) >> 16;
-    return rr | gg | bb;
+    return *(uint32_t*)(LFB + (size_t)y * G.pitch + (size_t)x * 4);
 }
 
 void gfx_blit_rgb(const uint32_t* src) {
@@ -152,13 +136,7 @@ void gfx_blit_rgb(const uint32_t* src) {
         dst = (uint32_t*)(uintptr_t)(gi->fb + (size_t)y * gi->pitch);
 
         for (int x = 0; x < gi->w; x++) {
-            uint32_t rgb = src[y * gi->w + x];
-
-            uint32_t bgr = ((rgb & 0x000000FF) << 16)
-                         |  (rgb & 0x0000FF00)
-                         | ((rgb & 0x00FF0000) >> 16);
-
-            dst[x] = bgr;
+            dst[x] = src[y * gi->w + x];
         }
     }
 }

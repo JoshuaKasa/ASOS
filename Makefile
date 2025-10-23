@@ -76,7 +76,7 @@ $(APP_DIR)/start.o: $(APP_DIR)/start.asm
 $(APP_DIR)/%.o: $(APP_DIR)/%.c
 	$(CC) -m32 -ffreestanding -fno-pic -fno-stack-protector -nostdlib -O0 -c $< -o $@
 
-$(APP_DIR)/%.elf: $(APP_DIR)/start.o $(APP_DIR)/%.o $(LIB_DIR)/string.o $(LIB_DIR)/stdlib.o
+$(APP_DIR)/%.elf: $(APP_DIR)/start.o $(APP_DIR)/%.o $(LIB_DIR)/string.o $(LIB_DIR)/stdlib.o $(LIB_DIR)/gfx2d.o $(LIB_DIR)/gfx3d.o
 	$(LD) -m elf_i386 -N -Ttext $(APP_BASE) -e _start -o $@ $^
 
 

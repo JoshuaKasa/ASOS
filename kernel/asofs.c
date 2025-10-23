@@ -211,10 +211,12 @@ int asofs_enum_files(char* out, int max_entries, int name_max) {
 
         int k = 0;
 
-        for (; k < n && src[k]; ++k) dst[k] = src[k];
-        for (; k < n; ++k) dst[k] = src[k];
+        for (; k < n && src[k]; ++k)
+            dst[k] = src[k];
+        for (; k < n; ++k)
+            dst[k] = '\0';
 
-        dst[n] = 0;
+        dst[n] = '\0';
     }
     return count;
 }

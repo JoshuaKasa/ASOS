@@ -62,8 +62,13 @@ void kernel_main(void) {
 
         uint8_t master = inb(0x21);
         uint8_t slave  = inb(0xA1);
-        master &= ~((1<<0) | (1<<1)); // IRQ0 (PIT) and IRQ1 (KBD) enabled
-        slave  |=  (1<<6); // IRQ14 (IDE) ALWAYS enabled
+
+        // Unmask PIT, keyboard and the cascade line so the slave PIC can raise IRQs
+        master &= ~((1 << 0) | (1 << 1) | (1 << 2));
+        // Allow PS/2 mouse on IRQ12 while keeping IDE (IRQ14) masked as before
+        slave &= ~(1 << 4);
+        slave |=  (1 << 6);
+
         outb(0x21, master);
         outb(0xA1, slave);
 
@@ -74,6 +79,10 @@ void kernel_main(void) {
         console_write("Installing syscalls...\n");
         syscall_init();
         console_write("Syscalls ready!\n");
+
+        console_write("Initializing mouse...\n");
+        mouse_init(use_gfx);
+        console_write("Mouse ready!\n");
 
         s_inited = 1;
 
