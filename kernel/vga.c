@@ -16,14 +16,19 @@ static int row = 0, col = 0;
 
 static inline uint8_t vga_attr_read(uint8_t index) {
     (void)inb(VGA_STATUS);
-    outb(VGA_AC_INDEX, index | 0x20);
-    return inb(VGA_AC_READ);
+    outb(VGA_AC_INDEX, index);
+    uint8_t value = inb(VGA_AC_READ);
+    (void)inb(VGA_STATUS);
+    outb(VGA_AC_INDEX, 0x20);
+    return value;
 }
 
 static inline void vga_attr_write(uint8_t index, uint8_t value) {
     (void)inb(VGA_STATUS);
     outb(VGA_AC_INDEX, index);
     outb(VGA_AC_INDEX, value);
+    (void)inb(VGA_STATUS);
+    outb(VGA_AC_INDEX, 0x20);
 }
 
 void vga_init(void) {
