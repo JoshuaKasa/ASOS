@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "../ui/theme.h"
 
 enum {
     CON_CHAR_W = 8,
@@ -18,3 +19,4 @@ void console_setcursor(int x, int y);
 void console_get_size(int* cols, int* rows);
 void console_redraw(void);
 void console_overlay_row_fg(int row);
+void console_on_theme_changed(const ui_theme_t* theme);

@@ -68,3 +68,7 @@ void vga_set_pos(int x, int y) {
 
     col = x; row = y;
 }
+
+void vga_set_color(uint8_t attr) {
+    color = attr;
+}

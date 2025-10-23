@@ -30,6 +30,8 @@ enum {
     SYSCALL_GFX_CLEAR = 21,
     SYSCALL_GFX_PUTPX = 22,
     SYSCALL_GFX_BLIT = 23,
+    SYSCALL_THEME_SET = 24,
+    SYSCALL_THEME_GET = 25,
 };
 typedef struct { 
     char ch; 
@@ -255,4 +257,26 @@ static inline int sys_gfx_blit(const unsigned int* rgb32_fullscreen){
                 : "memory","cc");
 
     return ret;
+}
+
+static inline int sys_theme_set(unsigned int theme_id){
+    int ret;
+
+    asm volatile("int $0x80"
+                : "=a"(ret)
+                : "a"(SYSCALL_THEME_SET), "b"(theme_id)
+                : "memory","cc");
+
+    return ret;
+}
+
+static inline unsigned int sys_theme_current(void){
+    unsigned int id;
+
+    asm volatile("int $0x80"
+                : "=a"(id)
+                : "a"(SYSCALL_THEME_GET)
+                : "memory","cc");
+
+    return id;
 }

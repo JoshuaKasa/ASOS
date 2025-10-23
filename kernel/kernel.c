@@ -1,4 +1,5 @@
 #include "console.h"
+#include "theme.h"
 #include "idt.h"
 #include "isr.h"
 #include "irq.h"
@@ -39,6 +40,7 @@ void kernel_main(void) {
         use_gfx = (gfx_init() == 0);
         if (use_gfx) gfx_clear(0x00000000);
         console_init(use_gfx);
+        theme_init();
         console_write("Console ready.\n");
 
         console_write("Installing IDT...\n");

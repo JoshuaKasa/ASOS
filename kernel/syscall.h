@@ -25,6 +25,8 @@ enum {
     SYSCALL_GFX_CLEAR = 21,
     SYSCALL_GFX_PUTPX = 22,
     SYSCALL_GFX_BLIT = 23,
+    SYSCALL_THEME_SET = 24,
+    SYSCALL_THEME_GET = 25,
 };
 
 void syscall_init(void);
