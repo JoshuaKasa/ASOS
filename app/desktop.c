@@ -1,297 +1,416 @@
 #include "../lib/stdlib.h"
 #include "../lib/string.h"
+#include "../lib/gfx2d.h"
 #include "asoapi.h"
 
-#define W 80
-#define H 25
+#define MAX_W 1280
+#define MAX_H 1024
+#define ICON_W      64
+#define ICON_H      64
+#define ICON_PAD_X  32
+#define ICON_PAD_Y  56
 
-// VGA colors
-#define C_BLACK 0x0
-#define C_BLUE 0x1
-#define C_GREEN 0x2
-#define C_CYAN 0x3
-#define C_RED 0x4
-#define C_MAGENTA 0x5
-#define C_BROWN 0x6
-#define C_LIGHTGRAY 0x7
-#define C_DARKGRAY 0x8
-#define C_LIGHTBLUE 0x9
-#define C_YELLOW 0xE
-#define C_WHITE 0xF
-#define ATTR(fg, bg) (((bg) << 4) | ((fg) & 0x0F))
+#define MAX_FILES   64
+#define NAME_MAX    32
 
-static inline int clamp(int v, int lo, int hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-static void put(int x, int y, char ch, unsigned char a) {
-    sys_put_at(x, y, ch, a);
-}
-static void text(int x, int y, const char* s, unsigned char a) {
-    for (int i = 0; s[i]; ++i)
-        put(x + i, y, s[i], a);
-}
+#define ATTR(fg, bg) ((((bg) & 0x0F) << 4) | ((fg) & 0x0F))
 
-static void hline(int x, int y, int w, unsigned char a) {
-    for (int i = 0; i < w; i++)
-        put(x + i, y, (i % 2) ? 205 : 196, a);
-}
-static void vline(int x, int y, int h, unsigned char a) {
-    for (int j = 0; j < h; j++)
-        put(x, y + j, (j % 2) ? 186 : 179, a);
-}
+static unsigned int backbuf[MAX_W * MAX_H];
+static gfx2d_surface_t surface;
+static int scr_w = 0, scr_h = 0;
+static int text_cols = 80, text_rows = 25;
 
-// Window with chunky corners
-static void window(int x, int y, int w, int h, const char* title, unsigned char frame, unsigned char title_attr, unsigned char fill) {
-    for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            put(x + i, y + j, ' ', fill);
-    put(x, y, 218, frame);
-    put(x + w - 1, y, 191, frame);
-    put(x, y + h - 1, 192, frame);
-    put(x + w - 1, y + h - 1, 217, frame);
-    hline(x + 1, y, w - 2, frame);
-    hline(x + 1, y + h - 1, w - 2, frame);
-    vline(x, y + 1, h - 2, frame);
-    vline(x + w - 1, y + 1, h - 2, frame);
-    if (title) {
-        int len = (int)strlen(title);
-        if (len > w - 4)
-            len = w - 4;
-        int tx = x + (w - len) / 2;
-        text(tx, y, title, title_attr);
-    }
-}
+typedef enum {
+    ICON_OTHER = 0,
+    ICON_TXT   = 1,
+    ICON_BIN   = 2,
+} icon_type_t;
 
-// Status bar bottom
-static void status(const char* s) {
-    for (int i = 0; i < W; i++)
-        put(i, H - 1, ' ', ATTR(C_BLACK, C_BLUE));
-    text(1, H - 1, s, ATTR(C_YELLOW, C_BLUE));
-}
-
-// Apps grid
 typedef struct {
-    const char* label;
-    const char* bin;
-} App;
-static const App apps[] = {
-    {"Terminal", "terminal.bin"}, {"TextEdit", "textedit.bin"}, {"Snake", "snake.bin"}, {"Pong", "pong.bin"}, {"Calc", "calculator.bin"},
-};
-static const int APP_N = (int)(sizeof(apps) / sizeof(apps[0]));
+    char name[NAME_MAX];
+    icon_type_t type;
+    int x, y;
+} icon_t;
 
-static void draw_icon_tile(int rx, int ry, const char* label, int focused) {
-    // 9x5 tile
-    unsigned char bg = focused ? ATTR(C_BLACK, C_LIGHTBLUE) : ATTR(C_WHITE, C_BLUE);
-    unsigned char fr = focused ? ATTR(C_YELLOW, C_BLACK) : ATTR(C_LIGHTGRAY, C_BLACK);
-    for (int j = 0; j < 5; j++)
-        for (int i = 0; i < 9; i++)
-            put(rx + i, ry + j, ' ', bg);
-    // fake tiny icon
-    put(rx + 2, ry + 1, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    put(rx + 3, ry + 1, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    put(rx + 2, ry + 2, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    put(rx + 3, ry + 2, (char)219, ATTR(C_WHITE, (focused ? C_LIGHTBLUE : C_BLUE)));
-    // label centered under
-    int lw = (int)strlen(label);
-    if (lw > 9)
-        lw = 9;
-    int lx = rx + (9 - lw) / 2;
-    text(lx, ry + 4, label, fr);
+static icon_t icons[MAX_FILES];
+static int icon_count = 0;
+static int selected_index = -1;
+static char status_line[96] = "Ready.";
+
+static int title_row = 0;
+static int hover_row = 0;
+static int status_row = 0;
+
+static inline int clampi(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
 }
 
-static void draw_apps(int sel) {
-    int x0 = 2, y0 = 3;
-    window(x0 - 2, y0 - 2, 9 * 4 + 6, 8, " Applications ", ATTR(C_LIGHTGRAY, C_BLACK), ATTR(C_YELLOW, C_BLACK), ATTR(C_BLACK, C_BLACK));
-    int col = 0, row = 0;
-    for (int i = 0; i < APP_N; i++) {
-        int rx = x0 + col * 9 + col * 3;
-        int ry = y0 + row * 6;
-        draw_icon_tile(rx, ry, apps[i].label, i == sel);
-        if (++col == 4) {
-            col = 0;
-            row++;
+static inline unsigned clampu(int v) {
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return (unsigned)v;
+}
+
+static inline unsigned adjust_color(unsigned rgb, int delta) {
+    int r = ((rgb >> 16) & 0xFF) + delta;
+    int g = ((rgb >> 8) & 0xFF) + delta;
+    int b = (rgb & 0xFF) + delta;
+    return (clampu(r) << 16) | (clampu(g) << 8) | clampu(b);
+}
+
+static void draw_background(void) {
+    gfx2d_surface_clear_gradient(&surface, GFX2D_RGB(20, 60, 100), 120, 40);
+}
+
+static icon_type_t detect_type(const char* name) {
+    int len = (int)strlen(name);
+    if (len >= 4) {
+        const char* ext = name + len - 4;
+        if (ext[0] == '.') {
+            if ((ext[1] == 't' || ext[1] == 'T') &&
+                (ext[2] == 'x' || ext[2] == 'X') &&
+                (ext[3] == 't' || ext[3] == 'T'))
+                return ICON_TXT;
+            if ((ext[1] == 'b' || ext[1] == 'B') &&
+                (ext[2] == 'i' || ext[2] == 'I') &&
+                (ext[3] == 'n' || ext[3] == 'N'))
+                return ICON_BIN;
         }
     }
-}
-
-// Files list
-#define MAX_FILES 32
-#define NAME_MAX 24  // show up to 23 chars + 0
-static char file_names[MAX_FILES][NAME_MAX];
-static int file_count = 0;
-
-static int ends_with_txt(const char* s) {
-    int n = (int)strlen(s);
-    if (n < 4)
-        return 0;
-    const char* e = s + n - 4;
-    return (e[0] == '.' || e[0] == '.') && ((e[1] == 't' || e[1] == 'T') && (e[2] == 'x' || e[2] == 'X') && (e[3] == 't' || e[3] == 'T'));
+    return ICON_OTHER;
 }
 
 static void load_files(void) {
-    // pull all files from FS and keep the .txt ones (case-insensitive)
     char raw[MAX_FILES * NAME_MAX];
-    int rc = sys_enumfiles(raw, MAX_FILES, NAME_MAX);
-    file_count = 0;
-    if (rc > 0) {
-        for (int i = 0; i < rc; i++) {
-            char* name = raw + i * NAME_MAX;
-            if (ends_with_txt(name)) {
-                // store for UI
-                int L = (int)strlen(name);
-                if (L >= NAME_MAX)
-                    L = NAME_MAX - 1;
-                for (int k = 0; k < L; k++)
-                    file_names[file_count][k] = name[k];
-                file_names[file_count][L] = 0;
-                file_count++;
-                if (file_count >= MAX_FILES)
-                    break;
-            }
-        }
+    int count = sys_enumfiles(raw, MAX_FILES, NAME_MAX);
+    icon_count = 0;
+    if (count < 0)
+        count = 0;
+    for (int i = 0; i < count && icon_count < MAX_FILES; ++i) {
+        char* nm = raw + i * NAME_MAX;
+        if (!nm[0])
+            continue;
+        int L = (int)strlen(nm);
+        if (L >= NAME_MAX)
+            L = NAME_MAX - 1;
+        for (int k = 0; k < L; ++k)
+            icons[icon_count].name[k] = nm[k];
+        icons[icon_count].name[L] = '\0';
+        icons[icon_count].type = detect_type(icons[icon_count].name);
+        icons[icon_count].x = 0;
+        icons[icon_count].y = 0;
+        icon_count++;
+    }
+    if (selected_index >= icon_count)
+        selected_index = -1;
+}
+
+static void layout_icons(void) {
+    int margin_x = 32;
+    int margin_y = 48;
+    int cell_w = ICON_W + ICON_PAD_X;
+    int cell_h = ICON_H + ICON_PAD_Y;
+    if (cell_w < ICON_W + 8)
+        cell_w = ICON_W + 8;
+    if (cell_h < ICON_H + 24)
+        cell_h = ICON_H + 24;
+    int cols = 1;
+    if (scr_w > margin_x * 2 + ICON_W)
+        cols = (scr_w - margin_x * 2 + (cell_w - 1)) / cell_w;
+    if (cols < 1)
+        cols = 1;
+    for (int i = 0; i < icon_count; ++i) {
+        int col = i % cols;
+        int row = i / cols;
+        icons[i].x = margin_x + col * cell_w;
+        icons[i].y = margin_y + row * cell_h;
+        if (icons[i].x + ICON_W >= scr_w - margin_x)
+            icons[i].x = scr_w - margin_x - ICON_W - 1;
+        if (icons[i].x < margin_x)
+            icons[i].x = margin_x;
+        if (icons[i].y + ICON_H >= scr_h - 40)
+            icons[i].y = scr_h - ICON_H - 40;
     }
 }
 
-static void draw_files(int sel) {
-    int x = 2, y = 12, w = 76, h = 10;
-    window(x, y, w, h, " Files (.txt) ", ATTR(C_LIGHTGRAY, C_BLACK), ATTR(C_YELLOW, C_BLACK), ATTR(C_BLACK, C_BLACK));
-    int list_y = y + 2;
-    int per_page = h - 3;
-    int page = (sel / per_page) * per_page;
-    for (int i = 0; i < per_page; i++) {
-        int idx = page + i;
-        // blank line
-        for (int X = 0; X < w - 4; X++)
-            put(x + 2 + X, list_y + i, ' ', ATTR(C_WHITE, C_BLACK));
-        if (idx < file_count) {
-            unsigned char a = (idx == sel) ? ATTR(C_BLACK, C_YELLOW) : ATTR(C_LIGHTGRAY, C_BLACK);
-            const char* nm = file_names[idx];
-            text(x + 3, list_y + i, nm, a);
-        }
+static void draw_file_glyph(const icon_t* ic) {
+    int x0 = ic->x + 14;
+    int y0 = ic->y + 20;
+    int w = ICON_W - 28;
+    if (w < 12) w = 12;
+    unsigned ink = GFX2D_RGB(240, 240, 240);
+    if (ic->type == ICON_BIN)
+        ink = GFX2D_RGB(220, 255, 220);
+    if (ic->type == ICON_OTHER)
+        ink = GFX2D_RGB(250, 250, 200);
+    for (int line = 0; line < 4; ++line) {
+        int y = y0 + line * 9;
+        gfx2d_fill_rect(&surface, x0, y, w, 3, adjust_color(ink, -20));
     }
 }
 
-// ---------- Main ----------
-void main(void) {
-    sys_clear();
-    sys_mouse_show(0);  // hide cursor sprite just in case
-    int cols = 80, rows = 25;
-    sys_getsize(&cols, &rows);
+static void draw_icon(const icon_t* ic, int hovered, int pressed, int selected) {
+    unsigned base = GFX2D_RGB(160, 160, 160);
+    if (ic->type == ICON_TXT)
+        base = GFX2D_RGB(70, 120, 220);
+    else if (ic->type == ICON_BIN)
+        base = GFX2D_RGB(80, 190, 110);
 
-    // Layout fits 80x25. If different, still draw within bounds.
-    (void)cols;
-    (void)rows;
+    if (selected)
+        base = adjust_color(base, 25);
+    if (hovered)
+        base = adjust_color(base, 20);
+    if (pressed)
+        base = adjust_color(base, -35);
 
-    // load .txt files for the right pane
+    gfx2d_fill_rect(&surface, ic->x + 4, ic->y + 6, ICON_W, ICON_H, adjust_color(base, -40));
+    gfx2d_fill_rect(&surface, ic->x, ic->y, ICON_W, ICON_H, base);
+    gfx2d_fill_rect(&surface, ic->x, ic->y, ICON_W, 14, adjust_color(base, 35));
+
+    // Folded corner effect
+    for (int dy = 0; dy < 12; ++dy) {
+        for (int dx = 0; dx < 12 - dy; ++dx)
+            gfx2d_plot(&surface, ic->x + ICON_W - 12 + dx, ic->y + dy, adjust_color(base, 55));
+    }
+
+    gfx2d_stroke_rect(&surface, ic->x, ic->y, ICON_W, ICON_H, adjust_color(base, -80));
+    draw_file_glyph(ic);
+}
+
+static void draw_text_row(int row, const char* msg, unsigned char attr) {
+    if (row < 0 || row >= text_rows)
+        return;
+    int n = (int)strlen(msg);
+    if (n > text_cols)
+        n = text_cols;
+    for (int i = 0; i < text_cols; ++i)
+        sys_put_at(i, row, ' ', ATTR(0, 0));
+    for (int i = 0; i < n; ++i)
+        sys_put_at(i, row, msg[i], attr);
+}
+
+static void draw_title_bar(void) {
+    draw_text_row(title_row, "ASOS Desktop  |  Left-click: open  Right-click: refresh  Q: quit", ATTR(0xF, 0x1));
+}
+
+static void set_status(const char* msg) {
+    int L = (int)strlen(msg);
+    if (L >= (int)sizeof(status_line))
+        L = (int)sizeof(status_line) - 1;
+    for (int i = 0; i < L; ++i)
+        status_line[i] = msg[i];
+    status_line[L] = '\0';
+    draw_text_row(status_row, status_line, ATTR(0xF, 0x0));
+}
+
+static const char* type_name(icon_type_t t) {
+    if (t == ICON_TXT) return "Text file";
+    if (t == ICON_BIN) return "Program";
+    return "File";
+}
+
+static void update_hover_line(int hover) {
+    if (hover < 0 || hover >= icon_count) {
+        draw_text_row(hover_row, "Select a file or application.", ATTR(0xF, 0x0));
+        return;
+    }
+    char line[96];
+    line[0] = '\0';
+    strcpy(line, icons[hover].name);
+    strcat(line, "  [");
+    strcat(line, type_name(icons[hover].type));
+    strcat(line, "]");
+    draw_text_row(hover_row, line, ATTR(0xF, 0x0));
+}
+
+static void draw_icon_labels(int hover, int pressed) {
+    int label_width = (ICON_W + ICON_PAD_X) / 8;
+    if (label_width < 8)
+        label_width = 8;
+    for (int i = 0; i < icon_count; ++i) {
+        int row = (icons[i].y + ICON_H + 8) / 16;
+        if (row >= text_rows)
+            row = text_rows - 1;
+        if (row < 0)
+            row = 0;
+        int center = (icons[i].x + ICON_W / 2) / 8;
+        int width = label_width;
+        int start = center - width / 2;
+        if (start < 0) {
+            width += start;
+            start = 0;
+        }
+        if (start + width > text_cols)
+            width = text_cols - start;
+        if (width <= 0)
+            continue;
+        for (int j = 0; j < width; ++j)
+            sys_put_at(start + j, row, ' ', ATTR(0, 0));
+        unsigned char fg = 0xF;
+        if (icons[i].type == ICON_TXT)
+            fg = 0x9;
+        else if (icons[i].type == ICON_BIN)
+            fg = 0xA;
+        if (i == hover)
+            fg = 0xE;
+        if (i == pressed)
+            fg = 0xF;
+        if (i == selected_index)
+            fg = 0xB;
+        int len = (int)strlen(icons[i].name);
+        if (len > width)
+            len = width;
+        for (int j = 0; j < len; ++j)
+            sys_put_at(start + j, row, icons[i].name[j], ATTR(fg, 0));
+    }
+}
+
+static int hit_test(int mx, int my) {
+    for (int i = 0; i < icon_count; ++i) {
+        if (mx >= icons[i].x && mx < icons[i].x + ICON_W &&
+            my >= icons[i].y && my < icons[i].y + ICON_H)
+            return i;
+    }
+    return -1;
+}
+
+static void open_icon(int idx) {
+    if (idx < 0 || idx >= icon_count)
+        return;
+
+    char target[NAME_MAX];
+    target[0] = '\0';
+    strcpy(target, icons[idx].name);
+
+    selected_index = idx;
+    char msg[96];
+    strcpy(msg, "Opening ");
+    strcat(msg, target);
+    set_status(msg);
+
+    sys_mouse_show(0);
+    if (icons[idx].type == ICON_TXT) {
+        char cmd[64];
+        strcpy(cmd, "textedit.bin ");
+        strcat(cmd, target);
+        sys_exec(cmd);
+    } else if (icons[idx].type == ICON_BIN) {
+        sys_exec(target);
+    } else {
+        set_status("No viewer for this file type.");
+        sys_mouse_show(1);
+        return;
+    }
+    sys_mouse_show(1);
+
+    set_status("Returned to desktop.");
     load_files();
+    layout_icons();
 
-    // selection state
-    int focus = 0;  // 0 = apps, 1 = files
-    int sel_app = 0;
-    int sel_file = 0;
-
-    // draw chrome
-    for (int y = 0; y < H - 1; y++)
-        for (int x = 0; x < W; x++)
-            put(x, y, ' ', ATTR(C_WHITE, C_BLACK));
-    text(2, 1, "ASOS Desktop", ATTR(C_YELLOW, C_BLACK));
-    text(20, 1, "[Arrows] Move   [TAB] Switch   [ENTER] Open   [Q] Quit", ATTR(C_LIGHTGRAY, C_BLACK));
-    draw_apps(sel_app);
-    draw_files(sel_file);
-    status("Welcome. Pick an app or a .txt file.");
-
-    sys_setcursor(W - 1, H - 1);
-
-    unsigned int refresh = sys_getticks() + 8;
-
-    while (1) {
-        unsigned int ch = sys_trygetchar();
-        if (ch) {
-            char c = (char)ch;
-            if (c == 'q' || c == 'Q') {
-                sys_write("\nBye!\n");
-                sys_exit();
-            }
-
-            if (c == '\t') {  // switch pane
-                focus = 1 - focus;
-                // repaint focus highlight
-                draw_apps(sel_app);
-                draw_files(sel_file);
-            } else if ((unsigned char)c == KEY_LEFT) {
-                if (focus == 0) {
-                    if (sel_app > 0)
-                        sel_app--;
-                    draw_apps(sel_app);
-                } else { /* files pane doesn't use LEFT */
-                }
-            } else if ((unsigned char)c == KEY_RIGHT) {
-                if (focus == 0) {
-                    if (sel_app < APP_N - 1)
-                        sel_app++;
-                    draw_apps(sel_app);
-                }
-            } else if ((unsigned char)c == KEY_UP) {
-                if (focus == 0) {
-                    if (sel_app >= 4)
-                        sel_app -= 4;
-                    draw_apps(sel_app);
-                } else {
-                    if (sel_file > 0)
-                        sel_file--;
-                    draw_files(sel_file);
-                }
-            } else if ((unsigned char)c == KEY_DOWN) {
-                if (focus == 0) {
-                    if (sel_app + 4 < APP_N)
-                        sel_app += 4;
-                    draw_apps(sel_app);
-                } else {
-                    if (sel_file + 1 < file_count)
-                        sel_file++;
-                    draw_files(sel_file);
-                }
-            } else if (c == '\n') {
-                if (focus == 0) {
-                    // launch selected app
-                    sys_write("Launching ");
-                    sys_write(apps[sel_app].label);
-                    sys_write("...\n");
-                    sys_exec(apps[sel_app].bin);
-                    // if back from app, re-draw UI
-                    sys_clear();
-                    load_files();
-                    draw_apps(sel_app);
-                    draw_files(sel_file);
-                    status("Back from app.");
-                } else {
-                    if (file_count > 0) {
-                        // open textedit on file
-                        char cmd[64];
-                        strcpy(cmd, "textedit.bin ");
-                        strcat(cmd, file_names[sel_file]);
-                        sys_write("Editing ");
-                        sys_write(file_names[sel_file]);
-                        sys_write("...\n");
-                        sys_exec(cmd);
-                        // return -> redraw (file list may have changed size if saved)
-                        sys_clear();
-                        load_files();
-                        draw_apps(sel_app);
-                        if (sel_file >= file_count && file_count > 0)
-                            sel_file = file_count - 1;
-                        draw_files(sel_file);
-                        status("Back from editor.");
-                    }
-                }
-            }
+    selected_index = -1;
+    for (int i = 0; i < icon_count; ++i) {
+        if (strcmp(icons[i].name, target) == 0) {
+            selected_index = i;
+            break;
         }
+    }
+}
 
-        unsigned now = sys_getticks();
-        if ((int)(now - refresh) >= 0) {
-            sys_setcursor(W - 1, H - 1);
-            refresh += 8;
+static void render_scene(int hover, int pressed) {
+    draw_background();
+    for (int i = 0; i < icon_count; ++i) {
+        draw_icon(&icons[i], i == hover, i == pressed, i == selected_index);
+    }
+    gfx2d_surface_present(&surface, sys_gfx_blit);
+    draw_icon_labels(hover, pressed);
+    draw_title_bar();
+    draw_text_row(status_row, status_line, ATTR(0xF, 0x0));
+    update_hover_line(hover);
+    sys_setcursor(text_cols - 1, text_rows - 1);
+}
+
+void main(void) {
+    unsigned int info = sys_gfx_info();
+    if (!info) {
+        sys_write("desktop: graphics mode required.\n");
+        sys_exit();
+    }
+    scr_w = (int)((info >> 16) & 0xFFFF);
+    scr_h = (int)(info & 0xFFFF);
+    if (scr_w <= 0 || scr_h <= 0) {
+        sys_write("desktop: invalid framebuffer.\n");
+        sys_exit();
+    }
+    if (scr_w > MAX_W)
+        scr_w = MAX_W;
+    if (scr_h > MAX_H)
+        scr_h = MAX_H;
+    gfx2d_surface_init(&surface, scr_w, scr_h, backbuf);
+    sys_getsize(&text_cols, &text_rows);
+    if (text_cols < 40)
+        text_cols = 40;
+    if (text_rows < 10)
+        text_rows = 10;
+    title_row = 0;
+    status_row = (text_rows >= 2) ? text_rows - 1 : 0;
+    hover_row = (text_rows >= 3) ? text_rows - 2 : status_row;
+    sys_clear();
+    sys_mouse_show(1);
+    load_files();
+    layout_icons();
+    if (icon_count == 0)
+        set_status("No files found in ASOFS.");
+    else
+        set_status("Welcome to the ASOS desktop.");
+    int hover = -1;
+    int last_hover = -2;
+    int pressed = -1;
+    int prev_buttons = 0;
+    int need_redraw = 1;
+    while (1) {
+        if (need_redraw || hover != last_hover) {
+            render_scene(hover, pressed);
+            need_redraw = 0;
+            last_hover = hover;
+        }
+        mouse_info_t mi;
+        sys_mouse_get(&mi);
+        hover = hit_test(mi.x, mi.y);
+        int buttons = (int)mi.buttons;
+        if ((buttons & 2) && !(prev_buttons & 2)) {
+            load_files();
+            layout_icons();
+            set_status("File list refreshed.");
+            need_redraw = 1;
+        }
+        if ((buttons & 1) && !(prev_buttons & 1)) {
+            pressed = hover;
+            need_redraw = 1;
+        }
+        if (!(buttons & 1) && (prev_buttons & 1)) {
+            if (pressed >= 0 && pressed == hover)
+                open_icon(pressed);
+            pressed = -1;
+            need_redraw = 1;
+        }
+        prev_buttons = buttons;
+        unsigned int key = sys_trygetchar();
+        if (key) {
+            char c = (char)key;
+            if (c == 'q' || c == 'Q' || c == 27) {
+                break;
+            } else if (c == 'r' || c == 'R') {
+                load_files();
+                layout_icons();
+                set_status("File list refreshed.");
+                need_redraw = 1;
+            }
         }
         asm volatile("hlt");
     }
+    sys_mouse_show(0);
+    sys_clear();
+    sys_exit();
 }
