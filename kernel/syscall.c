@@ -329,13 +329,8 @@ static uint32_t sys_gfx_blit_impl(uint32_t a, uint32_t ebx, uint32_t c, uint32_t
         uint32_t* dst = (uint32_t*)(fb + (size_t)y * pitch);
         const uint32_t* srow = src + (size_t)y * w;
 
-        for (int x = 0; x < w; x++) {
-            uint32_t rgb = srow[x];
-            uint32_t bgr = ((rgb & 0x000000FF) << 16)
-                         |  (rgb & 0x0000FF00)
-                         | ((rgb & 0x00FF0000) >> 16);
-            dst[x] = bgr;
-        }
+        for (int x = 0; x < w; x++)
+            dst[x] = srow[x];
 
         // After finishing a full 16-px text row, overlay its glyphs immediately
         if ((y % CON_CHAR_H) == (CON_CHAR_H - 1))

@@ -246,7 +246,7 @@ void gfx2d_draw_char(gfx2d_surface_t* surface, int x, int y, uint32_t rgb, unsig
             int px = x + col;
             if (px < 0 || px >= surface->width)
                 continue;
-            uint8_t mask = (uint8_t)(1u << (7 - col));
+            uint8_t mask = (uint8_t)(1u << col);
             if (bits & mask)
                 dst[px] = rgb;
         }
