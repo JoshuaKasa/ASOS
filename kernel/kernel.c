@@ -41,6 +41,11 @@ void kernel_main(void) {
         console_init(use_gfx);
         console_write("Console ready.\n");
 
+        console_write("Initializing mouse...\n");
+        mouse_init(use_gfx);
+        mouse_set_visible(0);
+        console_write("Mouse ready!\n");
+
         console_write("Installing IDT...\n");
         idt_install();
         console_write("IDT installed!\n");
@@ -62,8 +67,9 @@ void kernel_main(void) {
 
         uint8_t master = inb(0x21);
         uint8_t slave  = inb(0xA1);
-        master &= ~((1<<0) | (1<<1)); // IRQ0 (PIT) and IRQ1 (KBD) enabled
-        slave  |=  (1<<6); // IRQ14 (IDE) ALWAYS enabled
+        master &= ~((1<<0) | (1<<1) | (1<<2)); // Enable PIT, KBD and cascade to slave
+        slave  &= ~(1<<4); // Enable IRQ12 (PS/2 mouse)
+        slave  |=  (1<<6); // Keep IRQ14 (IDE) masked (polled)
         outb(0x21, master);
         outb(0xA1, slave);
 

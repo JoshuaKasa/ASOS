@@ -35,11 +35,14 @@ void main(void) {
             sys_clear();
         }
         else if (!strcmp(buf, "exit")) {
+            sys_mouse_show(0);
             sys_exit();
         }
         else if (!strncmp(buf, "run ", 4)) {
+            sys_mouse_show(0);
             sys_write("Launching...\n");
             sys_exec(buf + 4);
+            sys_mouse_show(0);
         }
         else if (!strcmp(buf, "files")) {
             sys_listfiles();
