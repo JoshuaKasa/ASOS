@@ -1,4 +1,5 @@
 #include "vga.h"
+#include "io.h"
 
 #define VGA_MEMORY ((uint16_t*)0xB8000)
 #define VGA_WIDTH 80
@@ -7,6 +8,29 @@
 static uint16_t* const vga = VGA_MEMORY;
 static uint8_t color = 0x0F; // White on black
 static int row = 0, col = 0;
+
+#define VGA_AC_INDEX 0x3C0
+#define VGA_AC_READ  0x3C1
+#define VGA_STATUS  0x3DA
+#define VGA_ATTR_MODE_CONTROL 0x10
+
+static inline uint8_t vga_attr_read(uint8_t index) {
+    (void)inb(VGA_STATUS);
+    outb(VGA_AC_INDEX, index | 0x20);
+    return inb(VGA_AC_READ);
+}
+
+static inline void vga_attr_write(uint8_t index, uint8_t value) {
+    (void)inb(VGA_STATUS);
+    outb(VGA_AC_INDEX, index);
+    outb(VGA_AC_INDEX, value);
+}
+
+void vga_init(void) {
+    uint8_t mode = vga_attr_read(VGA_ATTR_MODE_CONTROL);
+    mode &= ~(1u << 3); // Disable blink, enable bright background
+    vga_attr_write(VGA_ATTR_MODE_CONTROL, mode);
+}
 
 static inline uint16_t vga_entry(char c, uint8_t attr) {
     return (uint16_t)c | ((uint16_t)attr << 8);

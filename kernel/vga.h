@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 
+void vga_init(void);
 void vga_clear(void);
 void vga_backspace(void);
 void vga_putchar(char c);

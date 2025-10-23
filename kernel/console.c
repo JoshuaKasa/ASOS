@@ -104,6 +104,7 @@ void console_init(int use_gfx_mode) {
     } else {
         cols = 80; rows = 25;
         clear_buffers();
+        vga_init();
         vga_set_color(text_attr);
         vga_clear();
     }
